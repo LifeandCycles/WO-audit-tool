@@ -15,15 +15,19 @@ st.set_page_config(
 )
 
 # ── Matrix CNC Rain Background ────────────────────────────────────────────
-st.markdown("""
-<canvas id="matrixCNC" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0.12;"></canvas>
+# Uses st.components.v1.html() because Streamlit strips <script> from st.markdown
+import streamlit.components.v1 as components
+
+MATRIX_HTML = """
+<style>
+    body, html { margin:0; padding:0; overflow:hidden; background:transparent; }
+</style>
+<canvas id="matrixCNC"></canvas>
 <script>
 (function() {
     const canvas = document.getElementById('matrixCNC');
-    if (!canvas) return;
     const ctx = canvas.getContext('2d');
 
-    // CNC machine terms that rain down
     const glyphs = [
         'G00','G01','G02','G03','G28','G40','G41','G42','G43','G54',
         'G80','G81','G83','G90','G91','M00','M01','M03','M05','M06',
@@ -52,19 +56,16 @@ st.markdown("""
     function draw() {
         ctx.fillStyle = 'rgba(10, 14, 23, 0.15)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        ctx.font = fontSize + 'px JetBrains Mono, monospace';
+        ctx.font = fontSize + 'px monospace';
 
         for (let i = 0; i < columns; i++) {
             const glyph = glyphs[Math.floor(Math.random() * glyphs.length)];
             const x = i * (fontSize * 2.5);
             const y = drops[i] * fontSize;
 
-            // Bright head
             ctx.fillStyle = '#00ff9c';
             ctx.fillText(glyph, x, y);
 
-            // Dimmer trail
             if (drops[i] > 1) {
                 const trailGlyph = glyphs[Math.floor(Math.random() * glyphs.length)];
                 ctx.fillStyle = 'rgba(0, 255, 156, 0.3)';
@@ -79,21 +80,39 @@ st.markdown("""
             }
         }
 
-        // Recalc columns on resize
         const newCols = Math.floor(canvas.width / (fontSize * 2.5));
         if (newCols !== columns) {
             columns = newCols;
             drops = new Array(columns).fill(0).map(() => Math.random() * -50);
             speeds = new Array(columns).fill(0).map(() => 0.3 + Math.random() * 0.7);
         }
-
         requestAnimationFrame(draw);
     }
-    // Small delay to let fonts load
-    setTimeout(draw, 500);
+    draw();
 })();
 </script>
+"""
+
+# Inject the matrix iframe as a fixed background layer via CSS
+st.markdown("""
+<style>
+    iframe[title="streamlit_app.static.matrix"],
+    iframe[title="components.v1.html"] {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        z-index: 0 !important;
+        pointer-events: none !important;
+        opacity: 0.12 !important;
+        border: none !important;
+    }
+</style>
 """, unsafe_allow_html=True)
+
+# Render the matrix animation in an iframe Streamlit will actually execute
+components.html(MATRIX_HTML, height=0, scrolling=False)
 
 # ── Cyberpunk Console CSS ──────────────────────────────────────────────────
 st.markdown("""
