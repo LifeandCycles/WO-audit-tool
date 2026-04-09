@@ -14,6 +14,87 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Matrix CNC Rain Background ────────────────────────────────────────────
+st.markdown("""
+<canvas id="matrixCNC" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0.12;"></canvas>
+<script>
+(function() {
+    const canvas = document.getElementById('matrixCNC');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    // CNC machine terms that rain down
+    const glyphs = [
+        'G00','G01','G02','G03','G28','G40','G41','G42','G43','G54',
+        'G80','G81','G83','G90','G91','M00','M01','M03','M05','M06',
+        'M08','M09','M30','S12000','F250','T01','T02','T03','T04',
+        'X0.0','Y0.0','Z-1.5','Z0.1','A90','B45','H01','D01',
+        'RPM','IPM','SFM','DOC','WCS','ATC','DRO','CNC',
+        'HAAS','VF2','VF3','VF4','UMC','ST10','ST20','ST30',
+        'FANUC','MAZAK','DMG','OKUMA','MORI',
+        'SPINDLE','TURRET','COOLANT','PROBE','TOOL',
+        'RAPID','FEED','DWELL','CYCLE','HOME',
+        'WO','SA','PM','RMA','SN'
+    ];
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const fontSize = 13;
+    let columns = Math.floor(canvas.width / (fontSize * 2.5));
+    let drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+    let speeds = new Array(columns).fill(0).map(() => 0.3 + Math.random() * 0.7);
+
+    function draw() {
+        ctx.fillStyle = 'rgba(10, 14, 23, 0.15)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.font = fontSize + 'px JetBrains Mono, monospace';
+
+        for (let i = 0; i < columns; i++) {
+            const glyph = glyphs[Math.floor(Math.random() * glyphs.length)];
+            const x = i * (fontSize * 2.5);
+            const y = drops[i] * fontSize;
+
+            // Bright head
+            ctx.fillStyle = '#00ff9c';
+            ctx.fillText(glyph, x, y);
+
+            // Dimmer trail
+            if (drops[i] > 1) {
+                const trailGlyph = glyphs[Math.floor(Math.random() * glyphs.length)];
+                ctx.fillStyle = 'rgba(0, 255, 156, 0.3)';
+                ctx.fillText(trailGlyph, x, y - fontSize * 2);
+            }
+
+            drops[i] += speeds[i];
+
+            if (y > canvas.height && Math.random() > 0.975) {
+                drops[i] = Math.random() * -20;
+                speeds[i] = 0.3 + Math.random() * 0.7;
+            }
+        }
+
+        // Recalc columns on resize
+        const newCols = Math.floor(canvas.width / (fontSize * 2.5));
+        if (newCols !== columns) {
+            columns = newCols;
+            drops = new Array(columns).fill(0).map(() => Math.random() * -50);
+            speeds = new Array(columns).fill(0).map(() => 0.3 + Math.random() * 0.7);
+        }
+
+        requestAnimationFrame(draw);
+    }
+    // Small delay to let fonts load
+    setTimeout(draw, 500);
+})();
+</script>
+""", unsafe_allow_html=True)
+
 # ── Cyberpunk Console CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -21,7 +102,7 @@ st.markdown("""
 
     /* Global */
     .stApp { background-color: #0a0e17; }
-    .block-container { max-width: 780px; padding-top: 1.5rem; }
+    .block-container { max-width: 780px; padding-top: 1.5rem; position: relative; z-index: 1; }
 
     /* Kill default Streamlit header/footer chrome */
     header[data-testid="stHeader"] { background: transparent; }
