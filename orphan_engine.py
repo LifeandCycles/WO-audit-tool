@@ -25,16 +25,19 @@ CLOSED_SA_STATUSES = {
 }
 
 # Expected input columns (by position)
+# Column 5 (SA Status) may appear as "Status", "Status.1", or "Status2"
+# depending on the Salesforce export method. All are accepted.
 EXPECTED_HEADERS = [
     "Work Order Number",
     "Account: Account Name",
     "Status",           # WO Status
     "Appointment Number",
-    "Status",           # SA Status (Status.1)
+    None,               # SA Status — validated separately below
     "Earliest Start Permitted",
     "Scheduled Start",
     "Due Date",
 ]
+SA_STATUS_ACCEPTED = {"status", "status.1", "status2"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -138,9 +141,14 @@ def run_orphan_analysis(wo_file, source_filename=None):
     header_row = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     errors = []
     for i, expected in enumerate(EXPECTED_HEADERS):
-        if i >= len(header_row) or _clean(header_row[i]).lower() != expected.lower():
-            got = header_row[i] if i < len(header_row) else "(missing)"
-            errors.append(f"Column {i+1}: expected '{expected}', got '{got}'")
+        got = _clean(header_row[i]).lower() if i < len(header_row) else ""
+        if expected is None:
+            # SA Status column — accept any of the known variants
+            if got not in SA_STATUS_ACCEPTED:
+                errors.append(f"Column {i+1}: expected 'Status' or 'Status2', got '{header_row[i] if i < len(header_row) else '(missing)'}'")
+        elif got != expected.lower():
+            errors.append(f"Column {i+1}: expected '{expected}', got '{header_row[i] if i < len(header_row) else '(missing)'}'")
+
     if errors:
         return {"validation_ok": False, "validation_errors": errors}
 
