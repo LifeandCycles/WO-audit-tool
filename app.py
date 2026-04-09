@@ -15,104 +15,81 @@ st.set_page_config(
 )
 
 # ── Matrix CNC Rain Background ────────────────────────────────────────────
-# Uses st.components.v1.html() because Streamlit strips <script> from st.markdown
+# Uses st.components.v1.html with full viewport height so the iframe actually
+# renders, then CSS repositions it as a fixed background layer.
 import streamlit.components.v1 as components
 
 MATRIX_HTML = """
+<html>
+<head>
 <style>
-    body, html { margin:0; padding:0; overflow:hidden; background:transparent; }
+    html, body { margin:0; padding:0; overflow:hidden; background:#0a0e17; width:100%; height:100%; }
+    canvas { display:block; width:100%; height:100%; }
 </style>
-<canvas id="matrixCNC"></canvas>
+</head>
+<body>
+<canvas id="m"></canvas>
 <script>
-(function() {
-    const canvas = document.getElementById('matrixCNC');
-    const ctx = canvas.getContext('2d');
-
-    const glyphs = [
-        'G00','G01','G02','G03','G28','G40','G41','G42','G43','G54',
-        'G80','G81','G83','G90','G91','M00','M01','M03','M05','M06',
-        'M08','M09','M30','S12000','F250','T01','T02','T03','T04',
-        'X0.0','Y0.0','Z-1.5','Z0.1','A90','B45','H01','D01',
-        'RPM','IPM','SFM','DOC','WCS','ATC','DRO','CNC',
-        'HAAS','VF2','VF3','VF4','UMC','ST10','ST20','ST30',
-        'FANUC','MAZAK','DMG','OKUMA','MORI',
-        'SPINDLE','TURRET','COOLANT','PROBE','TOOL',
-        'RAPID','FEED','DWELL','CYCLE','HOME',
-        'WO','SA','PM','RMA','SN'
-    ];
-
-    function resize() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+var c = document.getElementById('m');
+var ctx = c.getContext('2d');
+var G = [
+    'G00','G01','G02','G03','G28','G40','G41','G42','G43','G54',
+    'G80','G81','G83','G90','G91','M00','M01','M03','M05','M06',
+    'M08','M09','M30','S12000','F250','T01','T02','T03','T04',
+    'X0.0','Y0.0','Z-1.5','Z0.1','A90','B45','H01','D01',
+    'RPM','IPM','SFM','DOC','WCS','ATC','DRO','CNC',
+    'HAAS','VF2','VF3','VF4','UMC','ST10','ST20','ST30',
+    'FANUC','MAZAK','DMG','OKUMA','MORI',
+    'SPINDLE','TURRET','COOLANT','PROBE','TOOL',
+    'RAPID','FEED','DWELL','CYCLE','HOME',
+    'WO','SA','PM','RMA','SN'
+];
+var fs = 13;
+var cols, drops, spd;
+function init() {
+    c.width = window.innerWidth;
+    c.height = window.innerHeight;
+    cols = Math.floor(c.width / (fs * 2.5));
+    drops = [];
+    spd = [];
+    for (var i = 0; i < cols; i++) {
+        drops.push(Math.random() * -50);
+        spd.push(0.3 + Math.random() * 0.7);
     }
-    resize();
-    window.addEventListener('resize', resize);
-
-    const fontSize = 13;
-    let columns = Math.floor(canvas.width / (fontSize * 2.5));
-    let drops = new Array(columns).fill(0).map(() => Math.random() * -50);
-    let speeds = new Array(columns).fill(0).map(() => 0.3 + Math.random() * 0.7);
-
-    function draw() {
-        ctx.fillStyle = 'rgba(10, 14, 23, 0.15)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.font = fontSize + 'px monospace';
-
-        for (let i = 0; i < columns; i++) {
-            const glyph = glyphs[Math.floor(Math.random() * glyphs.length)];
-            const x = i * (fontSize * 2.5);
-            const y = drops[i] * fontSize;
-
-            ctx.fillStyle = '#00ff9c';
-            ctx.fillText(glyph, x, y);
-
-            if (drops[i] > 1) {
-                const trailGlyph = glyphs[Math.floor(Math.random() * glyphs.length)];
-                ctx.fillStyle = 'rgba(0, 255, 156, 0.3)';
-                ctx.fillText(trailGlyph, x, y - fontSize * 2);
-            }
-
-            drops[i] += speeds[i];
-
-            if (y > canvas.height && Math.random() > 0.975) {
-                drops[i] = Math.random() * -20;
-                speeds[i] = 0.3 + Math.random() * 0.7;
-            }
+}
+init();
+window.onresize = init;
+function draw() {
+    ctx.fillStyle = 'rgba(10,14,23,0.15)';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.font = fs + 'px monospace';
+    for (var i = 0; i < cols; i++) {
+        var g = G[Math.floor(Math.random() * G.length)];
+        var x = i * (fs * 2.5);
+        var y = drops[i] * fs;
+        ctx.fillStyle = '#00ff9c';
+        ctx.fillText(g, x, y);
+        if (drops[i] > 1) {
+            ctx.fillStyle = 'rgba(0,255,156,0.3)';
+            ctx.fillText(G[Math.floor(Math.random()*G.length)], x, y - fs*2);
         }
-
-        const newCols = Math.floor(canvas.width / (fontSize * 2.5));
-        if (newCols !== columns) {
-            columns = newCols;
-            drops = new Array(columns).fill(0).map(() => Math.random() * -50);
-            speeds = new Array(columns).fill(0).map(() => 0.3 + Math.random() * 0.7);
+        drops[i] += spd[i];
+        if (y > c.height && Math.random() > 0.975) {
+            drops[i] = Math.random() * -20;
+            spd[i] = 0.3 + Math.random() * 0.7;
         }
-        requestAnimationFrame(draw);
     }
-    draw();
-})();
+    requestAnimationFrame(draw);
+}
+draw();
 </script>
+</body>
+</html>
 """
 
-# Inject the matrix iframe as a fixed background layer via CSS
-st.markdown("""
-<style>
-    iframe[title="streamlit_app.static.matrix"],
-    iframe[title="components.v1.html"] {
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        width: 100vw !important;
-        height: 100vh !important;
-        z-index: 0 !important;
-        pointer-events: none !important;
-        opacity: 0.12 !important;
-        border: none !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Render the matrix animation in an iframe Streamlit will actually execute
-components.html(MATRIX_HTML, height=0, scrolling=False)
+# Render the matrix component — give it real height so Streamlit allocates space
+# for the iframe, then CSS overrides reposition it as a fixed background.
+components.html(MATRIX_HTML, height=300, scrolling=False)
 
 # ── Cyberpunk Console CSS ──────────────────────────────────────────────────
 st.markdown("""
@@ -126,6 +103,24 @@ st.markdown("""
     /* Kill default Streamlit header/footer chrome */
     header[data-testid="stHeader"] { background: transparent; }
     .stDeployButton { display: none; }
+
+    /* ── Matrix background iframe ── */
+    .stElementContainer:has(iframe) {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        z-index: 0 !important;
+        pointer-events: none !important;
+        opacity: 0.12 !important;
+        overflow: hidden !important;
+    }
+    .stElementContainer:has(iframe) iframe {
+        width: 100vw !important;
+        height: 100vh !important;
+        border: none !important;
+    }
 
     /* ── Header bar ── */
     .console-header {
