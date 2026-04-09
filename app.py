@@ -44,41 +44,59 @@ var G = [
     'RAPID','FEED','DWELL','CYCLE','HOME',
     'WO','SA','PM','RMA','SN'
 ];
-var fs = 13;
-var cols, drops, spd;
+var fs = 14;
+var colW = fs * 5;
+var cols, drops, spd, glyphAt;
 function init() {
     c.width = window.innerWidth;
     c.height = window.innerHeight;
-    cols = Math.floor(c.width / (fs * 2.5));
+    cols = Math.floor(c.width / colW);
     drops = [];
     spd = [];
+    glyphAt = [];
     for (var i = 0; i < cols; i++) {
-        drops.push(Math.random() * -50);
-        spd.push(0.3 + Math.random() * 0.7);
+        drops.push(Math.random() * -30);
+        spd.push(0.08 + Math.random() * 0.12);
+        glyphAt.push(G[Math.floor(Math.random() * G.length)]);
     }
 }
 init();
 window.onresize = init;
+
+var frame = 0;
 function draw() {
-    ctx.fillStyle = 'rgba(10,14,23,0.15)';
+    ctx.fillStyle = 'rgba(10,14,23,0.06)';
     ctx.fillRect(0, 0, c.width, c.height);
-    ctx.font = fs + 'px monospace';
+    ctx.font = 'bold ' + fs + 'px monospace';
+
     for (var i = 0; i < cols; i++) {
-        var g = G[Math.floor(Math.random() * G.length)];
-        var x = i * (fs * 2.5);
+        var x = i * colW + 4;
         var y = drops[i] * fs;
-        ctx.fillStyle = '#00ff9c';
-        ctx.fillText(g, x, y);
-        if (drops[i] > 1) {
-            ctx.fillStyle = 'rgba(0,255,156,0.3)';
-            ctx.fillText(G[Math.floor(Math.random()*G.length)], x, y - fs*2);
+
+        if (frame % 4 === 0 && Math.random() > 0.7) {
+            glyphAt[i] = G[Math.floor(Math.random() * G.length)];
         }
+        var g = glyphAt[i];
+
+        ctx.fillStyle = '#00ff9c';
+        ctx.globalAlpha = 1.0;
+        ctx.fillText(g, x, y);
+
+        for (var t = 1; t <= 6; t++) {
+            ctx.globalAlpha = Math.max(0, 0.5 - t * 0.08);
+            ctx.fillStyle = 'rgba(0,255,156,' + ctx.globalAlpha + ')';
+            ctx.fillText(G[(i * 7 + t) % G.length], x, y - fs * t * 1.4);
+        }
+        ctx.globalAlpha = 1.0;
+
         drops[i] += spd[i];
-        if (y > c.height && Math.random() > 0.975) {
+
+        if (y > c.height + 100 && Math.random() > 0.98) {
             drops[i] = Math.random() * -20;
-            spd[i] = 0.3 + Math.random() * 0.7;
+            spd[i] = 0.08 + Math.random() * 0.12;
         }
     }
+    frame++;
     requestAnimationFrame(draw);
 }
 draw();
