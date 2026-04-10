@@ -1,9 +1,11 @@
 """
-WO Approval Audit Tool — Streamlit Web App V1.25
+WO Audit Console — Streamlit Web App V1.26
 Cyberpunk command console interface.
-Wraps the v12.7 audit engine for browser-based use.
+Tab 1: WO Approval Audit (engine v12.7)
+Tab 2: Orphan Work Order Analyzer (engine v1.0)
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import os, time, urllib.parse
 
 # ── Page config ────────────────────────────────────────────────────────────
@@ -14,6 +16,95 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Matrix G-code background ──────────────────────────────────────────────
+MATRIX_HTML = """
+<html>
+<head><style>html,body{margin:0;padding:0;overflow:hidden;background:transparent;}</style></head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+});
+
+const gcodes = [
+    'G00','G01','G02','G03','G17','G18','G19','G20','G21','G28',
+    'G40','G41','G42','G43','G49','G50','G52','G53','G54','G55',
+    'G56','G57','G58','G59','G73','G76','G80','G81','G82','G83',
+    'G84','G85','G86','G90','G91','G92','G93','G94','G95','G96',
+    'G97','G98','G99','M00','M01','M03','M04','M05','M06','M08',
+    'M09','M19','M30','M97','M98','M99','T01','T02','T03','T04',
+    'SPINDLE','COOLANT','TOOL CHG','FEEDRATE','RAPID','HOME',
+    'ATC','PROBE','OFFSET','DATUM','CLAMP','UNCLAMP'
+];
+
+const fs = 14;
+ctx.font = fs + 'px monospace';
+const colW = fs * 5;
+const cols = Math.floor(canvas.width / colW);
+const TRAIL = 6;
+
+let columns = [];
+for (let i = 0; i < cols; i++) {
+    columns.push({
+        y: Math.random() * canvas.height * -1,
+        speed: 0.08 + Math.random() * 0.12,
+        glyph: gcodes[Math.floor(Math.random() * gcodes.length)],
+        frame: 0,
+        trail: []
+    });
+}
+
+function draw() {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let i = 0; i < columns.length; i++) {
+        const col = columns[i];
+        col.frame++;
+
+        // Slowly cycle the glyph
+        if (col.frame % 4 === 0 && Math.random() < 0.3) {
+            col.trail.unshift(col.glyph);
+            if (col.trail.length > TRAIL) col.trail.pop();
+            col.glyph = gcodes[Math.floor(Math.random() * gcodes.length)];
+        }
+
+        const x = i * colW;
+
+        // Draw leader (brightest)
+        ctx.fillStyle = '#00ff9c';
+        ctx.font = 'bold ' + fs + 'px monospace';
+        ctx.fillText(col.glyph, x, col.y);
+
+        // Draw trail (fading)
+        ctx.font = fs + 'px monospace';
+        for (let t = 0; t < col.trail.length; t++) {
+            const alpha = (1 - (t + 1) / (TRAIL + 1)) * 0.6;
+            ctx.fillStyle = 'rgba(0, 255, 156, ' + alpha + ')';
+            ctx.fillText(col.trail[t], x, col.y - (t + 1) * (fs + 4));
+        }
+
+        col.y += col.speed;
+        if (col.y > canvas.height + TRAIL * (fs + 4)) {
+            col.y = -fs * 2;
+            col.trail = [];
+        }
+    }
+    requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
+"""
+components.html(MATRIX_HTML, height=300)
+
 # ── Cyberpunk Console CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -22,6 +113,23 @@ st.markdown("""
     /* Global */
     .stApp { background-color: #0a0e17; }
     .block-container { max-width: 780px; padding-top: 1.5rem; }
+
+    /* Matrix G-code background — pin the iframe behind everything */
+    div:has(> iframe) {
+        position: fixed !important;
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100vw !important;
+        height: 100vh !important;
+        z-index: 0;
+        opacity: 0.12;
+        pointer-events: none;
+    }
+    div:has(> iframe) iframe {
+        width: 100vw !important;
+        height: 100vh !important;
+    }
+    /* Ensure all real content sits above the background */
+    .block-container { position: relative; z-index: 1; }
 
     /* Kill default Streamlit header/footer chrome */
     header[data-testid="stHeader"] { background: transparent; }
@@ -99,6 +207,12 @@ st.markdown("""
     .metrics-grid {
         display: grid;
         grid-template-columns: repeat(5, 1fr);
+        gap: 0.5rem;
+        margin: 1rem 0;
+    }
+    .metrics-grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
         gap: 0.5rem;
         margin: 1rem 0;
     }
@@ -304,6 +418,52 @@ st.markdown("""
         border-radius: 4px;
     }
 
+    /* ── Tab styling ── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        border-bottom: 1px solid #21262d;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Rajdhani', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
+        letter-spacing: 1.5px !important;
+        text-transform: uppercase !important;
+        color: #8b949e !important;
+        padding: 0.6rem 1.5rem !important;
+        border: none !important;
+        background: transparent !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #00ff9c !important;
+        border-bottom: 2px solid #00ff9c !important;
+    }
+
+    /* ── Orphan reason table ── */
+    .reason-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.78rem;
+        margin: 1rem 0;
+    }
+    .reason-table th {
+        text-align: left;
+        color: #8b949e;
+        font-weight: 500;
+        padding: 0.4rem 0.6rem;
+        border-bottom: 1px solid #21262d;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .reason-table td {
+        padding: 0.5rem 0.6rem;
+        border-bottom: 1px solid #161b2211;
+        color: #c9d1d9;
+    }
+    .reason-table tr:hover td { background: #161b22; }
+
     /* ── Footer ── */
     .console-footer {
         text-align: center;
@@ -321,163 +481,172 @@ st.markdown("""
 # ── Header ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-header">
-    <div class="version">V1.25</div>
+    <div class="version">V1.26</div>
     <h1>WO Audit Console</h1>
-    <p class="subtitle">// upload salesforce export &gt; run audit engine &gt; download results</p>
+    <p class="subtitle">// work order approval audit &amp; orphan analyzer</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Status line ────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="status-line">
-    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.7 loaded
+    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.7 &middot; orphan engine v1.0
 </div>
 """, unsafe_allow_html=True)
 
-# ── File uploads ───────────────────────────────────────────────────────────
-wo_file = st.file_uploader(
-    "**WO Approval Report** (.xlsx)",
-    type=["xlsx"],
-    help="Salesforce WO export with WO_Output, Parts_Output, RO, and related sheets.",
-)
-haas_file = st.file_uploader(
-    "**Haas RMA Status** (.xlsx) — optional",
-    type=["xlsx"],
-    help="Haas RMA status export for Parts + Haas RMA merge sheet.",
-)
+# ══════════════════════════════════════════════════════════════════════════
+# TABS
+# ══════════════════════════════════════════════════════════════════════════
+tab_audit, tab_orphan = st.tabs(["WO Approval Audit", "Orphan Analyzer"])
 
-# ── Run button ─────────────────────────────────────────────────────────────
-run_disabled = wo_file is None
-run_clicked  = st.button(
-    "Execute Audit",
-    type="primary",
-    use_container_width=True,
-    disabled=run_disabled,
-)
+# ══════════════════════════════════════════════════════════════════════════
+# TAB 1 — WO APPROVAL AUDIT
+# ══════════════════════════════════════════════════════════════════════════
+with tab_audit:
+    wo_file = st.file_uploader(
+        "**WO Approval Report** (.xlsx)",
+        type=["xlsx"],
+        help="Salesforce WO export with WO_Output, Parts_Output, RO, and related sheets.",
+        key="audit_wo_file",
+    )
+    haas_file = st.file_uploader(
+        "**Haas RMA Status** (.xlsx) — optional",
+        type=["xlsx"],
+        help="Haas RMA status export for Parts + Haas RMA merge sheet.",
+        key="audit_haas_file",
+    )
 
-if run_disabled and not run_clicked:
-    st.markdown("""
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #30363d;
-                text-align: center; padding: 2rem 0;">
-        &gt; awaiting file upload_
-    </div>
-    """, unsafe_allow_html=True)
+    run_disabled = wo_file is None
+    run_clicked  = st.button(
+        "Execute Audit",
+        type="primary",
+        use_container_width=True,
+        disabled=run_disabled,
+        key="audit_run",
+    )
 
-# ── Execute audit ──────────────────────────────────────────────────────────
-if run_clicked and wo_file is not None:
-    with st.spinner("Executing audit sequence..."):
-        start = time.time()
-        from audit_engine import run_audit
-        result = run_audit(wo_file, haas_file)
-        elapsed = time.time() - start
-
-    # ── Validation failure ─────────────────────────────────────────────
-    if not result.get("validation_ok", True):
-        st.error("VALIDATION FAILED — file is not a valid WO Approval Report")
-        for e in result.get("validation_errors", []):
-            st.markdown(f"<div style='font-family: JetBrains Mono, monospace; font-size: 0.8rem; color: #ff3e3e; padding: 0.2rem 0;'>  &gt; {e}</div>", unsafe_allow_html=True)
-    else:
-        # ── Results ────────────────────────────────────────────────────
-        gs = result["gate_summary"]
-        gd = result.get("gate_details", {})
-        wo_n = result["wo_count"]
-        parts_n = result["parts_count"]
-        built = result["built"]
-        failed = result["failed"]
-
-        if built:
-            st.success(f"AUDIT COMPLETE — {len(built)} sheets built in {elapsed:.1f}s")
-        else:
-            st.error("AUDIT FAILED — no sheets could be built")
-
-        # ── Metric cards ───────────────────────────────────────────────
-        st.markdown(f"""
-        <div class="metrics-grid">
-            <div class="m-card info">
-                <div class="m-val info">{wo_n}</div>
-                <div class="m-label">Work Orders</div>
-            </div>
-            <div class="m-card info">
-                <div class="m-val info">{parts_n}</div>
-                <div class="m-label">Part Lines</div>
-            </div>
-            <div class="m-card ready">
-                <div class="m-val ready">{gs['pass']}</div>
-                <div class="m-label">Ready</div>
-            </div>
-            <div class="m-card blocked">
-                <div class="m-val blocked">{gs['fail']}</div>
-                <div class="m-label">Blocked</div>
-            </div>
-            <div class="m-card warned">
-                <div class="m-val warned">{gs['warn']}</div>
-                <div class="m-label">Warned</div>
-            </div>
+    if run_disabled and not run_clicked:
+        st.markdown("""
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #30363d;
+                    text-align: center; padding: 2rem 0;">
+            &gt; awaiting file upload_
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Gate-level breakdown ───────────────────────────────────────
-        if gd:
-            st.markdown('<div class="section-hdr">Gate Breakdown</div>', unsafe_allow_html=True)
-            rows_html = ""
-            for gname, counts in gd.items():
-                p = counts.get("Pass", 0)
-                f_count = counts.get("Fail", 0)
-                w = counts.get("Warn", 0)
-                p_cls = "g-pass" if p > 0 else "g-zero"
-                f_cls = "g-fail" if f_count > 0 else "g-zero"
-                w_cls = "g-warn" if w > 0 else "g-zero"
-                rows_html += f"""
-                <tr>
-                    <td class="gate-name">{gname}</td>
-                    <td class="{p_cls}">{p}</td>
-                    <td class="{f_cls}">{f_count}</td>
-                    <td class="{w_cls}">{w}</td>
-                </tr>"""
+    if run_clicked and wo_file is not None:
+        with st.spinner("Executing audit sequence..."):
+            start = time.time()
+            from audit_engine import run_audit
+            result = run_audit(wo_file, haas_file)
+            elapsed = time.time() - start
 
+        # ── Validation failure ─────────────────────────────────────────
+        if not result.get("validation_ok", True):
+            st.error("VALIDATION FAILED — file is not a valid WO Approval Report")
+            for e in result.get("validation_errors", []):
+                st.markdown(f"<div style='font-family: JetBrains Mono, monospace; font-size: 0.8rem; color: #ff3e3e; padding: 0.2rem 0;'>  &gt; {e}</div>", unsafe_allow_html=True)
+        else:
+            # ── Results ────────────────────────────────────────────────
+            gs = result["gate_summary"]
+            gd = result.get("gate_details", {})
+            wo_n = result["wo_count"]
+            parts_n = result["parts_count"]
+            built = result["built"]
+            failed = result["failed"]
+
+            if built:
+                st.success(f"AUDIT COMPLETE — {len(built)} sheets built in {elapsed:.1f}s")
+            else:
+                st.error("AUDIT FAILED — no sheets could be built")
+
+            # ── Metric cards ───────────────────────────────────────────
             st.markdown(f"""
-            <table class="gate-table">
-                <thead>
-                    <tr><th>Gate</th><th>Pass</th><th>Fail</th><th>Warn</th></tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-            </table>
+            <div class="metrics-grid">
+                <div class="m-card info">
+                    <div class="m-val info">{wo_n}</div>
+                    <div class="m-label">Work Orders</div>
+                </div>
+                <div class="m-card info">
+                    <div class="m-val info">{parts_n}</div>
+                    <div class="m-label">Part Lines</div>
+                </div>
+                <div class="m-card ready">
+                    <div class="m-val ready">{gs['pass']}</div>
+                    <div class="m-label">Ready</div>
+                </div>
+                <div class="m-card blocked">
+                    <div class="m-val blocked">{gs['fail']}</div>
+                    <div class="m-label">Blocked</div>
+                </div>
+                <div class="m-card warned">
+                    <div class="m-val warned">{gs['warn']}</div>
+                    <div class="m-label">Warned</div>
+                </div>
+            </div>
             """, unsafe_allow_html=True)
 
-        # ── Sheets built ───────────────────────────────────────────────
-        if built:
-            st.markdown(
-                '<div class="section-hdr">Output Sheets</div>'
-                + '<div style="font-family: JetBrains Mono, monospace; font-size: 0.78rem; color: #8b949e; padding: 0.3rem 0;">'
-                + " &middot; ".join(f'<span style="color:#c9d1d9">{s}</span>' for s in built)
-                + '</div>',
-                unsafe_allow_html=True
-            )
+            # ── Gate-level breakdown ───────────────────────────────────
+            if gd:
+                st.markdown('<div class="section-hdr">Gate Breakdown</div>', unsafe_allow_html=True)
+                rows_html = ""
+                for gname, counts in gd.items():
+                    p = counts.get("Pass", 0)
+                    f_count = counts.get("Fail", 0)
+                    w = counts.get("Warn", 0)
+                    p_cls = "g-pass" if p > 0 else "g-zero"
+                    f_cls = "g-fail" if f_count > 0 else "g-zero"
+                    w_cls = "g-warn" if w > 0 else "g-zero"
+                    rows_html += f"""
+                    <tr>
+                        <td class="gate-name">{gname}</td>
+                        <td class="{p_cls}">{p}</td>
+                        <td class="{f_cls}">{f_count}</td>
+                        <td class="{w_cls}">{w}</td>
+                    </tr>"""
 
-        if failed:
-            with st.expander(f"  {len(failed)} sheet(s) failed"):
-                for name, err in failed:
-                    st.error(f"**{name}:** {err}")
+                st.markdown(f"""
+                <table class="gate-table">
+                    <thead>
+                        <tr><th>Gate</th><th>Pass</th><th>Fail</th><th>Warn</th></tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
 
-        # ── Download button ────────────────────────────────────────────
-        if result["xlsx_bytes"]:
-            base_name = os.path.splitext(wo_file.name)[0]
-            out_name  = base_name + "_AUDIT.xlsx"
-            st.download_button(
-                label=f"Download {out_name}",
-                data=result["xlsx_bytes"],
-                file_name=out_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                use_container_width=True,
-            )
+            # ── Sheets built ───────────────────────────────────────────
+            if built:
+                st.markdown(
+                    '<div class="section-hdr">Output Sheets</div>'
+                    + '<div style="font-family: JetBrains Mono, monospace; font-size: 0.78rem; color: #8b949e; padding: 0.3rem 0;">'
+                    + " &middot; ".join(f'<span style="color:#c9d1d9">{s}</span>' for s in built)
+                    + '</div>',
+                    unsafe_allow_html=True
+                )
 
-        # ── Feedback / Dispute section ─────────────────────────────────
-        st.markdown('<div class="section-hdr">Scoring Feedback</div>', unsafe_allow_html=True)
+            if failed:
+                with st.expander(f"  {len(failed)} sheet(s) failed"):
+                    for name, err in failed:
+                        st.error(f"**{name}:** {err}")
 
-        # Build mailto template
-        feedback_subject = "WO Audit Scoring Feedback"
-        feedback_body = """WO Audit Scoring Dispute / Feedback
+            # ── Download button ────────────────────────────────────────
+            if result["xlsx_bytes"]:
+                base_name = os.path.splitext(wo_file.name)[0]
+                out_name  = base_name + "_AUDIT.xlsx"
+                st.download_button(
+                    label=f"Download {out_name}",
+                    data=result["xlsx_bytes"],
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="audit_download",
+                )
+
+            # ── Feedback / Dispute section ─────────────────────────────
+            st.markdown('<div class="section-hdr">Scoring Feedback</div>', unsafe_allow_html=True)
+
+            feedback_subject = "WO Audit Scoring Feedback"
+            feedback_body = """WO Audit Scoring Dispute / Feedback
 =====================================
 
 1. WO Number: [e.g. WO-00142587]
@@ -499,36 +668,173 @@ if run_clicked and wo_file is not None:
 =====================================
 This feedback helps calibrate the scoring model.
 """
-        mailto_link = (
-            "mailto:knutfinnjr@gmail.com"
-            "?subject=" + urllib.parse.quote(feedback_subject)
-            + "&body=" + urllib.parse.quote(feedback_body)
-        )
+            mailto_link = (
+                "mailto:knutfinnjr@gmail.com"
+                "?subject=" + urllib.parse.quote(feedback_subject)
+                + "&body=" + urllib.parse.quote(feedback_body)
+            )
 
-        st.markdown(f"""
-        <div class="feedback-box">
-            <h3>Dispute a Score?</h3>
-            <p>If a Documentation Quality score seems wrong, click below to open a
-            pre-filled email with the details we need to review and improve the model.</p>
-            <a href="{mailto_link}" class="feedback-btn" target="_blank">
-                Open Feedback Email
-            </a>
+            st.markdown(f"""
+            <div class="feedback-box">
+                <h3>Dispute a Score?</h3>
+                <p>If a Documentation Quality score seems wrong, click below to open a
+                pre-filled email with the details we need to review and improve the model.</p>
+                <a href="{mailto_link}" class="feedback-btn" target="_blank">
+                    Open Feedback Email
+                </a>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ── Processing log ─────────────────────────────────────────
+            with st.expander("Processing log"):
+                log_text = "\n".join(result["log"])
+                log_html = log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                log_html = log_html.replace("\u2713", '<span class="log-ok">\u2713</span>')
+                log_html = log_html.replace("\u2717", '<span class="log-err">\u2717</span>')
+                log_html = log_html.replace("ERROR", '<span class="log-err">ERROR</span>')
+                st.markdown(f'<div class="log-output"><pre>{log_html}</pre></div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TAB 2 — ORPHAN WORK ORDER ANALYZER
+# ══════════════════════════════════════════════════════════════════════════
+with tab_orphan:
+    st.markdown("""
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #8b949e;
+                padding: 0.5rem 0 1rem 0;">
+        Upload a WO/SA export to identify orphaned work orders &mdash;
+        open WOs with no valid future service appointment.
+    </div>
+    """, unsafe_allow_html=True)
+
+    orphan_file = st.file_uploader(
+        "**WO / SA Export** (.xlsx)",
+        type=["xlsx"],
+        help="Salesforce export with Work Order Number, Account Name, Status, Appointment Number, SA Status, ESP, Scheduled Start, Due Date columns.",
+        key="orphan_file",
+    )
+
+    orphan_disabled = orphan_file is None
+    orphan_clicked  = st.button(
+        "Analyze Orphans",
+        type="primary",
+        use_container_width=True,
+        disabled=orphan_disabled,
+        key="orphan_run",
+    )
+
+    if orphan_disabled and not orphan_clicked:
+        st.markdown("""
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #30363d;
+                    text-align: center; padding: 2rem 0;">
+            &gt; awaiting WO/SA export_
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Processing log ─────────────────────────────────────────────
-        with st.expander("Processing log"):
-            log_text = "\n".join(result["log"])
-            log_html = log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            log_html = log_html.replace("\u2713", '<span class="log-ok">\u2713</span>')
-            log_html = log_html.replace("\u2717", '<span class="log-err">\u2717</span>')
-            log_html = log_html.replace("ERROR", '<span class="log-err">ERROR</span>')
-            st.markdown(f'<div class="log-output"><pre>{log_html}</pre></div>', unsafe_allow_html=True)
+    if orphan_clicked and orphan_file is not None:
+        with st.spinner("Scanning for orphaned work orders..."):
+            start = time.time()
+            from orphan_engine import run_orphan_analysis
+            result = run_orphan_analysis(orphan_file, source_filename=orphan_file.name)
+            elapsed = time.time() - start
+
+        # ── Validation failure ─────────────────────────────────────────
+        if not result.get("validation_ok", True):
+            st.error("VALIDATION FAILED — file is not a valid WO/SA export")
+            for e in result.get("validation_errors", []):
+                st.markdown(f"<div style='font-family: JetBrains Mono, monospace; font-size: 0.8rem; color: #ff3e3e; padding: 0.2rem 0;'>  &gt; {e}</div>", unsafe_allow_html=True)
+        else:
+            # ── Results ────────────────────────────────────────────────
+            total    = result["total_wos"]
+            orphans  = result["orphan_count"]
+            healthy  = result["healthy_count"]
+            rate     = result["orphan_rate"]
+            reasons  = result.get("reason_counts", {})
+
+            rate_pct = f"{rate * 100:.1f}%"
+
+            if orphans == 0:
+                st.success(f"ALL CLEAR — {total} active WOs, zero orphans ({elapsed:.1f}s)")
+            else:
+                st.warning(f"SCAN COMPLETE — {orphans} orphan(s) found across {total} active WOs ({elapsed:.1f}s)")
+
+            # ── Metric cards ───────────────────────────────────────────
+            st.markdown(f"""
+            <div class="metrics-grid-3">
+                <div class="m-card info">
+                    <div class="m-val info">{total}</div>
+                    <div class="m-label">Active WOs</div>
+                </div>
+                <div class="m-card blocked">
+                    <div class="m-val blocked">{orphans}</div>
+                    <div class="m-label">Orphans</div>
+                </div>
+                <div class="m-card ready">
+                    <div class="m-val ready">{healthy}</div>
+                    <div class="m-label">Healthy</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ── Orphan rate ────────────────────────────────────────────
+            st.markdown(f"""
+            <div style="text-align: center; padding: 0.5rem 0;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #8b949e;">
+                    Orphan Rate: </span>
+                <span style="font-family: 'Rajdhani', sans-serif; font-size: 1.3rem; font-weight: 700;
+                             color: {'#ff3e3e' if rate > 0.1 else '#ffb800' if rate > 0.05 else '#00ff9c'};">
+                    {rate_pct}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ── Reason breakdown ───────────────────────────────────────
+            if reasons:
+                st.markdown('<div class="section-hdr">Orphan Reasons</div>', unsafe_allow_html=True)
+                rows_html = ""
+                for reason, cnt in sorted(reasons.items(), key=lambda x: -x[1]):
+                    rows_html += f"""
+                    <tr>
+                        <td style="color: #ff3e3e; font-weight: 600; width: 60px; text-align: center;">{cnt}</td>
+                        <td>{reason}</td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <table class="reason-table">
+                    <thead>
+                        <tr><th>Count</th><th>Reason</th></tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+            # ── Download button ────────────────────────────────────────
+            if result.get("xlsx_bytes"):
+                base_name = os.path.splitext(orphan_file.name)[0]
+                out_name  = base_name + "_ORPHAN_REPORT.xlsx"
+                st.download_button(
+                    label=f"Download {out_name}",
+                    data=result["xlsx_bytes"],
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="orphan_download",
+                )
+
+            # ── Processing log ─────────────────────────────────────────
+            with st.expander("Processing log"):
+                log_text = "\n".join(result["log"])
+                log_html = log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                log_html = log_html.replace("\u2713", '<span class="log-ok">\u2713</span>')
+                log_html = log_html.replace("\u2717", '<span class="log-err">\u2717</span>')
+                log_html = log_html.replace("ERROR", '<span class="log-err">ERROR</span>')
+                st.markdown(f'<div class="log-output"><pre>{log_html}</pre></div>', unsafe_allow_html=True)
+
 
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-footer">
-    <span>&#9889;</span> WO Audit Console V1.25 &mdash; Engine v12.7
+    <span>&#9889;</span> WO Audit Console V1.26 &mdash; Engine v12.7 &middot; Orphan v1.0
     <span>&middot;</span> Built by K
 </div>
 """, unsafe_allow_html=True)
