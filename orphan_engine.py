@@ -130,34 +130,70 @@ def run_orphan_analysis(wo_file, source_filename=None):
             "validation_errors": [f"Cannot open file: {e}"],
         }
 
-    ws = wb.active
-    if ws is None or ws.max_row is None or ws.max_row < 2:
-        return {
-            "validation_ok": False,
-            "validation_errors": ["File has no data rows."],
-        }
+    # ── Find the header row ──────────────────────────────────────────
+    # Salesforce exports sometimes have title rows or blank rows before
+    # the actual column headers. Scan all sheets and up to 20 rows deep.
+    ws = None
+    header_row_idx = None
+    header_row = None
 
-    # ── Validate headers ──────────────────────────────────────────────
-    header_row = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    errors = []
-    for i, expected in enumerate(EXPECTED_HEADERS):
-        got = _clean(header_row[i]).lower() if i < len(header_row) else ""
-        if expected is None:
-            # SA Status column — accept any of the known variants
-            if got not in SA_STATUS_ACCEPTED:
-                errors.append(f"Column {i+1}: expected 'Status' or 'Status2', got '{header_row[i] if i < len(header_row) else '(missing)'}'")
-        elif got != expected.lower():
-            errors.append(f"Column {i+1}: expected '{expected}', got '{header_row[i] if i < len(header_row) else '(missing)'}'")
+    def _check_row(row_values):
+        """Return True if this row looks like our expected header."""
+        if len(row_values) < len(EXPECTED_HEADERS):
+            return False
+        for i, expected in enumerate(EXPECTED_HEADERS):
+            got = _clean(row_values[i]).lower()
+            if expected is None:
+                if got not in SA_STATUS_ACCEPTED:
+                    return False
+            elif got != expected.lower():
+                return False
+        return True
 
-    if errors:
+    for sheet in wb.sheetnames:
+        candidate = wb[sheet]
+        if candidate.max_row is None or candidate.max_row < 2:
+            continue
+        scan_limit = min(20, candidate.max_row)
+        for r_idx in range(1, scan_limit + 1):
+            row_vals = [c.value for c in next(candidate.iter_rows(min_row=r_idx, max_row=r_idx))]
+            if _check_row(row_vals):
+                ws = candidate
+                header_row_idx = r_idx
+                header_row = row_vals
+                break
+        if ws is not None:
+            break
+
+    if ws is None or header_row_idx is None:
+        # Build a useful error showing what was actually in row 1 of the active sheet
+        fallback = wb.active
+        if fallback and fallback.max_row and fallback.max_row >= 1:
+            r1 = [c.value for c in next(fallback.iter_rows(min_row=1, max_row=1))]
+        else:
+            r1 = []
+        errors = []
+        for i, expected in enumerate(EXPECTED_HEADERS):
+            got = _clean(r1[i]).lower() if i < len(r1) else ""
+            label = expected if expected else "Status/Status2"
+            if expected is None:
+                if got not in SA_STATUS_ACCEPTED:
+                    errors.append(f"Column {i+1}: expected '{label}', got '{r1[i] if i < len(r1) else '(missing)'}'")
+            elif got != expected.lower():
+                errors.append(f"Column {i+1}: expected '{expected}', got '{r1[i] if i < len(r1) else '(missing)'}'")
+        if not errors:
+            errors.append("File has no data rows.")
         return {"validation_ok": False, "validation_errors": errors}
 
+    if header_row_idx > 1:
+        log.append(f"[OK]  Headers found on row {header_row_idx} of sheet '{ws.title}'")
     log.append(f"[OK]  Headers validated ({len(header_row)} columns)")
 
     # ── Parse rows into WO groups ─────────────────────────────────────
+    data_start = header_row_idx + 1
     wos = {}
     row_count = 0
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+    for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, values_only=True):
         wo_num   = _clean(row[0])
         acct     = _clean(row[1])
         wo_stat  = _clean(row[2])
