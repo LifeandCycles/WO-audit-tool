@@ -1976,90 +1976,98 @@ def build_doc_quality_sheet(ws, data):
     ws.sheet_properties.tabColor = "2E75B6"
 
 
+INPUT_DIR  = "Input"
+OUTPUT_DIR = "Output"
 
-def run_audit(wo_file, haas_file=None):
-    """
-    Run the full WO audit pipeline on uploaded file objects.
-    Returns dict with xlsx_bytes, built, failed, log, wo_count, parts_count,
-    gate_summary, gate_details, validation_ok, validation_errors.
-    """
-    import io
-    log = []
+def main():
+    # ── Create folders ──────────────────────────────────────────────────
+    for folder in (INPUT_DIR, OUTPUT_DIR):
+        os.makedirs(folder, exist_ok=True)
 
-    def _log(msg):
-        log.append(msg)
+    # ── Find the WO report in Input/ ────────────────────────────────────
+    xlsx_files = [f for f in os.listdir(INPUT_DIR)
+                  if f.lower().endswith(".xlsx") and not f.startswith("~")]
 
-    _log("Loading WO report...")
-    d = load_data(wo_file)
-    for sheet_name, df in d.items():
-        if isinstance(df, pd.DataFrame) and len(df) > 0:
-            _log(f"  {sheet_name:20s}: {len(df):6d} rows")
+    # Separate Haas RMA file from WO report
+    haas_candidates = [f for f in xlsx_files if "rma" in f.lower()]
+    wo_candidates   = [f for f in xlsx_files if f not in haas_candidates]
 
-    # Validate report format
+    if not wo_candidates:
+        print("ERROR: No .xlsx file found in '%s/' folder." % INPUT_DIR)
+        print("       Drop your WO Approval Report into the Input folder and re-run.")
+        return
+    if len(wo_candidates) > 1:
+        print("WARNING: Multiple .xlsx files in Input/ — using the first one:")
+        for x in wo_candidates:
+            print("  • %s" % x)
+
+    f  = os.path.join(INPUT_DIR, wo_candidates[0])
+    hf = os.path.join(INPUT_DIR, haas_candidates[0]) if haas_candidates else None
+
+    print("Reading: %s" % f)
+    d = load_data(f)
+
+    # ── Validate report format ─────────────────────────────────────────
+    # Required sheets: WO_Output and Parts_Output must have rows and key columns
     validation_errors = []
     wo_out = d.get("WO_Output", pd.DataFrame())
     pa_out = d.get("Parts_Output", pd.DataFrame())
     if len(wo_out) == 0:
-        validation_errors.append("WO_Output sheet is missing or empty.")
+        validation_errors.append("WO_Output sheet is missing or empty — this file may not be a WO Approval Report.")
     elif "WO#" not in wo_out.columns:
-        validation_errors.append("WO_Output sheet has no 'WO#' column.")
+        validation_errors.append("WO_Output sheet has no 'WO#' column — expected a WO Approval Report format.")
     if len(pa_out) == 0:
         validation_errors.append("Parts_Output sheet is missing or empty.")
     elif "WO#" not in pa_out.columns:
         validation_errors.append("Parts_Output sheet has no 'WO#' column.")
     if validation_errors:
+        print("\nERROR: File does not appear to be a valid WO Approval Report:")
         for e in validation_errors:
-            _log(f"VALIDATION ERROR: {e}")
-        return {
-            "xlsx_bytes": b"", "built": [], "failed": [],
-            "log": log, "wo_count": 0, "parts_count": 0,
-            "gate_summary": {"pass": 0, "fail": 0, "warn": 0},
-            "gate_details": {},
-            "validation_ok": False, "validation_errors": validation_errors,
-        }
+            print("  • %s" % e)
+        print("\nExpected sheets: WO_Output, Parts_Output, RO, WO, WOLI, SA")
+        print("Drop the correct Salesforce export into the Input/ folder and re-run.")
+        return
+
+    # Report audit scope
+    if "WO_Status" in wo_out.columns:
+        audit_count = len(wo_out[wo_out["WO_Status"].isin(AUDIT_STATUSES)])
+        other_count = len(wo_out) - audit_count
+        print(f"  Audit scope       : {audit_count:6d} WOs at {', '.join(AUDIT_STATUSES)}")
+        if other_count:
+            print(f"  Cross-ref only    : {other_count:6d} WOs (other statuses — used for destination checks)")
 
     d["Parts_Output"] = enrich_desc(d["Parts_Output"], d.get("PARTS_SOLD"))
     d["Parts_Output"] = enrich_rma(d["Parts_Output"], d["RO"])
 
+    # Build CA lookup from WO sheet (Cause + Corrective Action)
     d["ca_lookup"] = build_ca_lookup(d)
     ca_count = sum(1 for c, ca in d["ca_lookup"].values() if ca.strip())
-    _log(f"  CA lookup         : {ca_count:6d} WOs with Corrective Action")
-
-    # Audit scope
-    if "WO_Status" in wo_out.columns:
-        audit_count = len(wo_out[wo_out["WO_Status"].isin(AUDIT_STATUSES)])
-        other_count = len(wo_out) - audit_count
-        _log(f"  Audit scope       : {audit_count:6d} WOs at {', '.join(AUDIT_STATUSES)}")
-        if other_count:
-            _log(f"  Cross-ref only    : {other_count:6d} WOs (other statuses)")
+    print("  CA lookup         : %6d WOs with Corrective Action" % ca_count)
 
     haas_df = None
-    if haas_file is not None:
-        haas_df = pd.read_excel(haas_file, header=1, dtype=str)
-        _log(f"  Haas RMA file     : {len(haas_df):6d} rows")
+    if hf:
+        haas_df = pd.read_excel(hf, header=1, dtype=str)
+        print("  Haas RMA file     : %6d rows  (%s)" % (len(haas_df), os.path.basename(hf)))
+    else:
+        print("  Haas RMA file     : not found in Input/ — skipping merge")
 
-    # Filter to audit-eligible WOs for counts
-    wo_audit = wo_out[wo_out["WO_Status"].isin(AUDIT_STATUSES)] if "WO_Status" in wo_out.columns else wo_out
-    wo_count    = len(wo_audit)
-    parts_count = len(d.get("Parts_Output", pd.DataFrame()))
-
-    # Build workbook
-    _log("Building workbook...")
+    print("\nBuilding workbook...")
     wb = Workbook(); wb.remove(wb.active)
     built  = []
     failed = []
 
     def try_sheet(name, build_func, *args, **kwargs):
+        """Build a sheet; on failure log the error and remove the empty tab."""
         try:
             ws = wb.create_sheet(name)
             build_func(ws, *args, **kwargs)
             built.append(name)
-            _log(f"  \u2713 {name}")
+            print("  ✓ %s" % name)
         except Exception as e:
             failed.append((name, str(e)))
             if name in wb.sheetnames:
                 del wb[name]
-            _log(f"  \u2717 {name} \u2014 ERROR: {e}")
+            print("  ✗ %s — ERROR: %s" % (name, e))
 
     try_sheet("WO Approval View", build_approval, d)
     try_sheet("WO Summary",       build_summary, d["WO_Output"])
@@ -2070,93 +2078,27 @@ def run_audit(wo_file, haas_file=None):
     try_sheet("Doc Quality",      build_doc_quality_sheet, d)
     try_sheet("Key",              build_key, has_haas=(haas_df is not None))
 
-    # Move WO Gate Summary to first position
+    # Move WO Gate Summary to first position if it built
     if "WO Gate Summary" in wb.sheetnames:
         idx = wb.sheetnames.index("WO Gate Summary")
         wb.move_sheet("WO Gate Summary", offset=-idx)
 
-    # Gate summary stats + per-gate details (audit-eligible WOs only)
-    gate_summary = {"pass": 0, "fail": 0, "warn": 0}
-    gate_details = {}
-    GATE_NAMES = [
-        "WO Status Ready", "Destination Review", "RO-Eligible Parts Identified",
-        "PR / PRLI Integrity", "Consumed vs Not Used", "Required RO Coverage",
-        "RO Status Valid", "Documentation Quality",
-    ]
-    for g in GATE_NAMES:
-        gate_details[g] = {"Pass": 0, "Fail": 0, "Warn": 0}
-
-    try:
-        pa_df  = d["Parts_Output"]
-        ro_df  = d["RO"]
-        ca_lk  = d.get("ca_lookup", {})
-        woli_lk, sa_lk, wo_cust, destin_lk = build_destination_lookups(d)
-        tech_ca_idx = _build_tech_ca_index(wo_audit, ca_lk)
-
-        for _, wrow in wo_audit.iterrows():
-            wn   = str(wrow.get("WO#",""))
-            tech = str(wrow.get("WO_Technician",""))
-            sub  = str(wrow.get("WO_Subtype",""))
-            wp   = pa_df[pa_df["WO#"] == wn] if len(pa_df) else pd.DataFrame()
-            parts = wp.to_dict("records")
-            cause, ca = get_ca(ca_lk, wn)
-            wo_has_parts = len(parts) > 0
-
-            gate_results = [
-                ("WO Status Ready",              gate_wo_status(wrow.to_dict())),
-                ("Destination Review",           gate_destination(wrow.to_dict(), woli_lk, sa_lk, wo_cust, destin_lk)),
-                ("RO-Eligible Parts Identified", gate_ro_eligible_parts(parts)),
-                ("PR / PRLI Integrity",          gate_pr_prli(parts)),
-                ("Consumed vs Not Used",         gate_consumed_vs_nnu(parts)),
-                ("Required RO Coverage",         gate_ro_coverage(parts, sub, ro_df, wn)),
-                ("RO Status Valid",              gate_ro_status(parts, ro_df, wn)),
-            ]
-
-            # Doc quality with CA duplicate merged in
-            dq_result, dq_detail, dq_scores = dq_gate(cause, ca, sub, wn, has_parts=wo_has_parts)
-            ca_dup_result, ca_dup_detail = gate_ca_duplicate(wn, tech, tech_ca_idx)
-            if ca_dup_result == "Warn":
-                dq_detail += f" | COPY/PASTE WARNING: {ca_dup_detail}"
-                if dq_result == "Pass":
-                    dq_result = "Warn"
-            gate_results.append(("Documentation Quality", (dq_result, dq_detail)))
-
-            wo_has_fail = False
-            wo_has_warn = False
-            for gname, (result, detail) in gate_results:
-                gate_details[gname][result] = gate_details[gname].get(result, 0) + 1
-                if result == "Fail":
-                    wo_has_fail = True
-                elif result == "Warn":
-                    wo_has_warn = True
-
-            if wo_has_fail:
-                gate_summary["fail"] += 1
-            elif wo_has_warn:
-                gate_summary["warn"] += 1
-            else:
-                gate_summary["pass"] += 1
-    except Exception:
-        pass
-
-    # Save to bytes
-    buf = io.BytesIO()
+    # ── Always save whatever we built ───────────────────────────────────
+    # Name output after the input file for traceability
+    base = os.path.splitext(wo_candidates[0])[0]
+    out = os.path.join(OUTPUT_DIR, base + "_AUDIT.xlsx")
     if built:
-        wb.save(buf)
-        sheet_list = ", ".join(built)
-        _log(f"Sheets built: {len(built)}/{len(built)+len(failed)} \u2014 {sheet_list}")
+        wb.save(out)
+        print("\nSaved: %s" % out)
+        print("  Sheets built: %d/%d — %s" % (
+            len(built), len(built) + len(failed), ", ".join(built)))
     else:
-        _log("ERROR: No sheets could be built.")
+        print("\nERROR: No sheets could be built — file not saved.")
 
-    return {
-        "xlsx_bytes":         buf.getvalue(),
-        "built":              built,
-        "failed":             failed,
-        "log":                log,
-        "wo_count":           wo_count,
-        "parts_count":        parts_count,
-        "gate_summary":       gate_summary,
-        "gate_details":       gate_details,
-        "validation_ok":      True,
-        "validation_errors":  [],
-    }
+    if failed:
+        print("\n  ⚠ FAILED sheets:")
+        for name, err in failed:
+            print("    ✗ %s — %s" % (name, err))
+
+if __name__ == "__main__":
+    main()
