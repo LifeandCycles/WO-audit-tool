@@ -1439,23 +1439,21 @@ def gate_destination(wrow, woli_lookup, sa_lookup, wo_customer, destin_lookup=No
         summary += f" | {len(travel_only)} date(s) with travel but no labor"
 
     # ── DESTIN-01 cross-reference ────────────────────────────────────────────
-    issues = []
-    if remove_dates or no_fee_dates or travel_only:
-        issues.append("structure/threshold issue")
+    destin_issue = False
 
     if destin_qty > 0 and fees_apply == 0:
         summary += f" | DESTIN-01 ({destin_qty:.0f}) present but 0 fees apply — REMOVE destination fee"
-        issues.append("destin-01 should not be here")
+        destin_issue = True
     elif destin_qty == 0 and fees_apply > 0:
         summary += f" | NO DESTIN-01 found — ADD {fees_apply} destination fee(s)"
-        issues.append("destin-01 missing")
+        destin_issue = True
     elif destin_qty > 0 and fees_apply > 0 and int(destin_qty) != fees_apply:
         summary += f" | DESTIN-01 qty ({destin_qty:.0f}) ≠ calculated ({fees_apply}) — ADJUST"
-        issues.append("destin-01 qty mismatch")
+        destin_issue = True
     elif destin_qty > 0 and fees_apply > 0 and int(destin_qty) == fees_apply:
         summary += f" | DESTIN-01 ({destin_qty:.0f}) matches"
 
-    if issues:
+    if destin_issue:
         return "Fail", summary
 
     return "Pass", summary
