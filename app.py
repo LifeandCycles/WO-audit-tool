@@ -1,8 +1,9 @@
 """
-WO Audit Console — Streamlit Web App V1.26
+WO Audit Console — Streamlit Web App V1.27
 Cyberpunk command console interface.
 Tab 1: WO Approval Audit (engine v12.7)
-Tab 2: Orphan Work Order Analyzer (engine v1.0)
+Tab 2: Quick WO Gates — pass/fail gates without CA grading
+Tab 3: Orphan Work Order Analyzer (engine v1.0)
 """
 import streamlit as st
 import streamlit.components.v1 as components
@@ -473,6 +474,31 @@ st.markdown("""
     }
     .reason-table tr:hover td { background: #161b22; }
 
+    /* ── CA Reminder banner ── */
+    .ca-reminder {
+        background: #0d1117;
+        border: 1px solid #58a6ff33;
+        border-left: 3px solid #58a6ff;
+        border-radius: 4px;
+        padding: 1.2rem 1.5rem;
+        margin: 1.2rem 0;
+    }
+    .ca-reminder h3 {
+        font-family: 'Rajdhani', sans-serif;
+        color: #58a6ff;
+        font-size: 1rem;
+        margin: 0 0 0.5rem 0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .ca-reminder p {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.78rem;
+        color: #8b949e;
+        margin: 0;
+        line-height: 1.6;
+    }
+
     /* ── Footer ── */
     .console-footer {
         text-align: center;
@@ -490,23 +516,23 @@ st.markdown("""
 # ── Header ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-header">
-    <div class="version">V1.26</div>
+    <div class="version">V1.27</div>
     <h1>WO Audit Console</h1>
-    <p class="subtitle">// work order approval audit &amp; orphan analyzer</p>
+    <p class="subtitle">// work order approval audit &amp; quick gates &amp; orphan analyzer</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Status line ────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="status-line">
-    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.7 &middot; orphan engine v1.0
+    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.7 &middot; quick gates &middot; orphan engine v1.0
 </div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════════════════
-tab_audit, tab_orphan = st.tabs(["WO Approval Audit", "Orphan Analyzer"])
+tab_audit, tab_quick, tab_orphan = st.tabs(["WO Approval Audit", "Quick WO Gates", "Orphan Analyzer"])
 
 # ══════════════════════════════════════════════════════════════════════════
 # TAB 1 — WO APPROVAL AUDIT
@@ -705,7 +731,176 @@ This feedback helps calibrate the scoring model.
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# TAB 2 — ORPHAN WORK ORDER ANALYZER
+# TAB 2 — QUICK WO GATES (no Corrective Action grading)
+# ══════════════════════════════════════════════════════════════════════════
+with tab_quick:
+    st.markdown("""
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #8b949e;
+                padding: 0.5rem 0 1rem 0;">
+        Pass/fail gate check &mdash; all gates <em>except</em> Documentation Quality scoring.
+    </div>
+    """, unsafe_allow_html=True)
+
+    qg_wo_file = st.file_uploader(
+        "**WO Approval Report** (.xlsx)",
+        type=["xlsx"],
+        help="Same Salesforce WO export. Gates run without CA grading.",
+        key="qg_wo_file",
+    )
+    qg_haas_file = st.file_uploader(
+        "**Haas RMA Status** (.xlsx) — optional",
+        type=["xlsx"],
+        help="Haas RMA status export for Parts + Haas RMA merge sheet.",
+        key="qg_haas_file",
+    )
+
+    qg_disabled = qg_wo_file is None
+    qg_clicked  = st.button(
+        "Run Quick Gates",
+        type="primary",
+        use_container_width=True,
+        disabled=qg_disabled,
+        key="qg_run",
+    )
+
+    if qg_disabled and not qg_clicked:
+        st.markdown("""
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #30363d;
+                    text-align: center; padding: 2rem 0;">
+            &gt; awaiting file upload_
+        </div>
+        """, unsafe_allow_html=True)
+
+    if qg_clicked and qg_wo_file is not None:
+        with st.spinner("Running quick gate check..."):
+            start = time.time()
+            from audit_engine import run_audit
+            qg_result = run_audit(qg_wo_file, qg_haas_file, skip_dq=True)
+            elapsed = time.time() - start
+
+        # ── Validation failure ─────────────────────────────────────────
+        if not qg_result.get("validation_ok", True):
+            st.error("VALIDATION FAILED — file is not a valid WO Approval Report")
+            for e in qg_result.get("validation_errors", []):
+                st.markdown(f"<div style='font-family: JetBrains Mono, monospace; font-size: 0.8rem; color: #ff3e3e; padding: 0.2rem 0;'>  &gt; {e}</div>", unsafe_allow_html=True)
+        else:
+            gs = qg_result["gate_summary"]
+            gd = qg_result.get("gate_details", {})
+            wo_n = qg_result["wo_count"]
+            parts_n = qg_result["parts_count"]
+            built = qg_result["built"]
+            failed = qg_result["failed"]
+
+            if built:
+                st.success(f"QUICK GATES COMPLETE — {len(built)} sheets built in {elapsed:.1f}s")
+            else:
+                st.error("AUDIT FAILED — no sheets could be built")
+
+            # ── Metric cards ───────────────────────────────────────────
+            st.markdown(f"""
+            <div class="metrics-grid">
+                <div class="m-card info">
+                    <div class="m-val info">{wo_n}</div>
+                    <div class="m-label">Work Orders</div>
+                </div>
+                <div class="m-card info">
+                    <div class="m-val info">{parts_n}</div>
+                    <div class="m-label">Part Lines</div>
+                </div>
+                <div class="m-card ready">
+                    <div class="m-val ready">{gs['pass']}</div>
+                    <div class="m-label">Ready</div>
+                </div>
+                <div class="m-card blocked">
+                    <div class="m-val blocked">{gs['fail']}</div>
+                    <div class="m-label">Blocked</div>
+                </div>
+                <div class="m-card warned">
+                    <div class="m-val warned">{gs['warn']}</div>
+                    <div class="m-label">Warned</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ── Gate-level breakdown (no Doc Quality) ─────────────────
+            if gd:
+                st.markdown('<div class="section-hdr">Gate Breakdown</div>', unsafe_allow_html=True)
+                rows_html = ""
+                for gname, counts in gd.items():
+                    p = counts.get("Pass", 0)
+                    f_count = counts.get("Fail", 0)
+                    w = counts.get("Warn", 0)
+                    p_cls = "g-pass" if p > 0 else "g-zero"
+                    f_cls = "g-fail" if f_count > 0 else "g-zero"
+                    w_cls = "g-warn" if w > 0 else "g-zero"
+                    rows_html += f"""
+                    <tr>
+                        <td class="gate-name">{gname}</td>
+                        <td class="{p_cls}">{p}</td>
+                        <td class="{f_cls}">{f_count}</td>
+                        <td class="{w_cls}">{w}</td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <table class="gate-table">
+                    <thead>
+                        <tr><th>Gate</th><th>Pass</th><th>Fail</th><th>Warn</th></tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+            # ── CA Reminder Banner ────────────────────────────────────
+            st.markdown("""
+            <div class="ca-reminder">
+                <h3>&#9888; Corrective Action Reminder</h3>
+                <p>Documentation Quality scoring is <strong style="color:#58a6ff;">not included</strong>
+                in this quick gate check. Please review the Corrective Action report manually
+                at <strong style="color:#58a6ff;">final approval</strong> before sending to D365.</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ── Sheets built ──────────────────────────────────────────
+            if built:
+                st.markdown(
+                    '<div class="section-hdr">Output Sheets</div>'
+                    + '<div style="font-family: JetBrains Mono, monospace; font-size: 0.78rem; color: #8b949e; padding: 0.3rem 0;">'
+                    + " &middot; ".join(f'<span style="color:#c9d1d9">{s}</span>' for s in built)
+                    + '</div>',
+                    unsafe_allow_html=True
+                )
+
+            if failed:
+                with st.expander(f"  {len(failed)} sheet(s) failed"):
+                    for name, err in failed:
+                        st.error(f"**{name}:** {err}")
+
+            # ── Download button ───────────────────────────────────────
+            if qg_result["xlsx_bytes"]:
+                base_name = os.path.splitext(qg_wo_file.name)[0]
+                out_name  = base_name + "_AUDIT.xlsx"
+                st.download_button(
+                    label=f"Download {out_name}",
+                    data=qg_result["xlsx_bytes"],
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="qg_download",
+                )
+
+            # ── Processing log ────────────────────────────────────────
+            with st.expander("Processing log"):
+                log_text = "\n".join(qg_result["log"])
+                log_html = log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                log_html = log_html.replace("\u2713", '<span class="log-ok">\u2713</span>')
+                log_html = log_html.replace("\u2717", '<span class="log-err">\u2717</span>')
+                log_html = log_html.replace("ERROR", '<span class="log-err">ERROR</span>')
+                st.markdown(f'<div class="log-output"><pre>{log_html}</pre></div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TAB 3 — ORPHAN WORK ORDER ANALYZER
 # ══════════════════════════════════════════════════════════════════════════
 with tab_orphan:
     st.markdown("""
@@ -843,7 +1038,7 @@ with tab_orphan:
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-footer">
-    <span>&#9889;</span> WO Audit Console V1.26 &mdash; Engine v12.7 &middot; Orphan v1.0
+    <span>&#9889;</span> WO Audit Console V1.27 &mdash; Engine v12.7 &middot; Quick Gates &middot; Orphan v1.0
     <span>&middot;</span> Built by K
 </div>
 """, unsafe_allow_html=True)
