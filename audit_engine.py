@@ -1224,7 +1224,7 @@ C_GATE_FINAL_FAIL = "9C0006"  # dark red    — WO blocked
 C_GATE_ROW   = "F2F2F2"   # light grey  — gate rows
 C_GATE_ALT   = "FFFFFF"   # white       — alternating
 
-GS_WIDTHS = {"A":22,"B":10,"C":60}
+GS_WIDTHS = {"A":28,"B":18,"C":90}
 
 def gs_wo_banner(ws, r, wo_num, customer, tech, subtype):
     ws.row_dimensions[r].height = 22
@@ -1235,18 +1235,32 @@ def gs_wo_banner(ws, r, wo_num, customer, tech, subtype):
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
 
 def gs_gate_row(ws, r, gate_name, result, detail, is_final=False, alt=False, is_doc=False):
-    ws.row_dimensions[r].height = 18 if not is_doc else 22
     bg = C_GATE_ALT if alt else C_GATE_ROW
+
+    # Estimate row height based on content length (auto-fit approximation)
+    detail_len = len(str(detail)) if detail else 0
+    result_len = len(str(result)) if result else 0
+    # Approx chars per line at col C width of 90 ≈ ~100 chars
+    detail_lines = max(1, (detail_len // 100) + 1)
+    result_lines = max(1, (result_len // 18) + 1)
+    content_lines = max(detail_lines, result_lines)
+    base_h = 22 if (is_doc or is_final) else 18
+    row_h = max(base_h, content_lines * 15)
+    ws.row_dimensions[r].height = row_h
 
     # Col A — Gate name
     c1 = ws.cell(r, 1, gate_name)
     c1.fill = solid(bg); c1.font = mkfont(bold=(is_final or is_doc), color=DARK)
-    c1.border = THIN_BORDER; c1.alignment = Alignment(vertical="center")
+    c1.border = THIN_BORDER; c1.alignment = Alignment(vertical="center", wrap_text=True)
 
     # Col B — result (colored)
     if is_final:
-        res_fill = C_GATE_FINAL_PASS if "ready" in result.lower() else C_GATE_FINAL_FAIL
-        res_fc   = WHITE
+        if "ready" in result.lower():
+            res_fill = C_GATE_FINAL_PASS; res_fc = WHITE
+        elif "approved" in result.lower():
+            res_fill = C_DQ_WARN; res_fc = DARK      # yellow — passed with note
+        else:
+            res_fill = C_GATE_FINAL_FAIL; res_fc = WHITE
     elif is_doc:
         if result == "Pass":
             res_fill = C_DQ_GOOD; res_fc = DARK
@@ -1260,7 +1274,7 @@ def gs_gate_row(ws, r, gate_name, result, detail, is_final=False, alt=False, is_
 
     c2 = ws.cell(r, 2, result)
     c2.fill = solid(res_fill); c2.font = mkfont(bold=(is_final or is_doc), color=res_fc)
-    c2.border = THIN_BORDER; c2.alignment = Alignment(horizontal="center", vertical="center")
+    c2.border = THIN_BORDER; c2.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     # Col C — detail
     c3 = ws.cell(r, 3, detail)
@@ -1733,7 +1747,7 @@ def gate_ca_duplicate(wo_num, tech, tech_ca_index):
 
 # ── Main builder ─────────────────────────────────────────
 
-def build_gate_summary(ws, data):
+def build_gate_summary(ws, data, skip_dq=False):
     wo_all = data["WO_Output"]
     wo_df  = wo_all[wo_all["WO_Status"].isin(AUDIT_STATUSES)] if "WO_Status" in wo_all.columns else wo_all
     pa_df  = data["Parts_Output"]
@@ -1791,31 +1805,46 @@ def build_gate_summary(ws, data):
             gs_gate_row(ws, cur, gate_name, result, detail, alt=(i % 2 == 0))
             cur += 1
 
-        # ── Documentation Quality Gate (second-to-last, before Final) ─────
-        # Check if WO has any parts sold (for part# warning)
-        wo_has_parts = len(parts) > 0
-        dq_result, dq_detail, dq_scores = dq_gate(cause, ca, sub, wn, has_parts=wo_has_parts)
-        is_doc_skip = dq_scores.get("skip", False)
+        if not skip_dq:
+            # ── Documentation Quality Gate (second-to-last, before Final) ─────
+            wo_has_parts = len(parts) > 0
+            dq_result, dq_detail, dq_scores = dq_gate(cause, ca, sub, wn, has_parts=wo_has_parts)
+            is_doc_skip = dq_scores.get("skip", False)
 
-        # Merge CA duplicate check into doc quality as a warning
-        ca_dup_result, ca_dup_detail = gate_ca_duplicate(wn, tech, tech_ca_idx)
-        if ca_dup_result == "Warn":
-            dq_detail += f" | COPY/PASTE WARNING: {ca_dup_detail}"
-            if dq_result == "Pass":
-                dq_result = "Warn"
+            # Merge CA duplicate check into doc quality as a warning
+            ca_dup_result, ca_dup_detail = gate_ca_duplicate(wn, tech, tech_ca_idx)
+            if ca_dup_result == "Warn":
+                dq_detail += f" | COPY/PASTE WARNING: {ca_dup_detail}"
+                if dq_result == "Pass":
+                    dq_result = "Warn"
 
-        # Warn counts as pass for Final gate — only Fail blocks
-        if dq_result == "Fail":
-            failed_gates.append("Documentation Quality")
+            # Warn counts as pass for Final gate — only Fail blocks
+            if dq_result == "Fail":
+                failed_gates.append("Documentation Quality")
 
-        gs_gate_row(ws, cur, "Documentation Quality", dq_result, dq_detail,
-                    is_doc=(not is_doc_skip), alt=False)
-        cur += 1
+            gs_gate_row(ws, cur, "Documentation Quality", dq_result, dq_detail,
+                        is_doc=(not is_doc_skip), alt=False)
+            cur += 1
+        else:
+            # skip_dq: show a reminder row instead of scoring
+            gs_gate_row(ws, cur, "Documentation Quality", "N/A",
+                        "Skipped — review Corrective Action at final approval",
+                        alt=False)
+            cur += 1
 
         # ── Final row ──────────────────────────────────────────────────────
-        if failed_gates:
+        # Separate hard-fail gates from destination-only fails
+        hard_fails  = [g for g in failed_gates if g != "Destination Review"]
+        destin_fail = "Destination Review" in failed_gates
+
+        if hard_fails:
+            # Real blockers exist
             final_result = "WO blocked"
             final_detail = "Blocked by: " + ", ".join(failed_gates)
+        elif destin_fail:
+            # Only destination is failing — WO is approved with a fee reminder
+            final_result = "WO approved — add destination/fees before sending to D365"
+            final_detail = "All gates passed — destination fee(s) still needed"
         else:
             final_result = "WO ready to send to D365"
             final_detail = "All gates passed"
@@ -2066,8 +2095,9 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
     try_sheet("Parts Detail",     build_parts, d["Parts_Output"], d["WO_Output"], d["RO"], data=d)
     if haas_df is not None:
         try_sheet("Parts + Haas RMA", build_rma_merged, d, haas_df)
-    try_sheet("WO Gate Summary",  build_gate_summary, d)
-    try_sheet("Doc Quality",      build_doc_quality_sheet, d)
+    try_sheet("WO Gate Summary",  build_gate_summary, d, skip_dq=skip_dq)
+    if not skip_dq:
+        try_sheet("Doc Quality",      build_doc_quality_sheet, d)
     try_sheet("Key",              build_key, has_haas=(haas_df is not None))
 
     # Move WO Gate Summary to first position
@@ -2123,18 +2153,22 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
                         dq_result = "Warn"
                 gate_results.append(("Documentation Quality", (dq_result, dq_detail)))
 
-            wo_has_fail = False
+            wo_failed_gates = []
             wo_has_warn = False
             for gname, (result, detail) in gate_results:
                 gate_details[gname][result] = gate_details[gname].get(result, 0) + 1
                 if result == "Fail":
-                    wo_has_fail = True
+                    wo_failed_gates.append(gname)
                 elif result == "Warn":
                     wo_has_warn = True
 
-            if wo_has_fail:
+            # Destination-only fail = pass with warn (not a hard block)
+            hard_fails = [g for g in wo_failed_gates if g != "Destination Review"]
+            destin_only = len(wo_failed_gates) > 0 and len(hard_fails) == 0
+
+            if hard_fails:
                 gate_summary["fail"] += 1
-            elif wo_has_warn:
+            elif destin_only or wo_has_warn:
                 gate_summary["warn"] += 1
             else:
                 gate_summary["pass"] += 1
