@@ -343,12 +343,27 @@ def dq_gate(cause_raw, ca_raw, subtype='', wo_num='', has_parts=False):
     # Hard blocks always fail regardless of score (unresolved, short/vague,
     # prior WO ref, HSG paste). Element misses (missing arrival, work,
     # closure, observed, tested) become Warn at score ≥60.
+    #
+    # Special case: "unresolved" in multi-visit CAs.
+    # If the CA already has closure confirmed (returned to service, etc.)
+    # and scores well (≥80), the "unresolved" match is likely from an
+    # earlier visit's diagnostic notes — not the final outcome.
+    # In that case, demote unresolved from hard-block to warning.
     ELEMENT_MISS_PREFIXES = (
         "No arrival", "No work", "No closure", "No diagnostic",
         "Failure not observed",
     )
-    hard_blocks = [f for f in auto_fails if not f.startswith(ELEMENT_MISS_PREFIXES)]
-    element_misses = [f for f in auto_fails if f.startswith(ELEMENT_MISS_PREFIXES)]
+    has_closure = elements.get('has_closure', False)
+    hard_blocks = []
+    element_misses = []
+    for f in auto_fails:
+        if f.startswith(ELEMENT_MISS_PREFIXES):
+            element_misses.append(f)
+        elif "unresolved" in f.lower() and has_closure and score_100 >= 80:
+            # Multi-visit CA: closure confirmed + high score → demote to warning
+            warnings.append(f + " (early visit notes — closure confirmed)")
+        else:
+            hard_blocks.append(f)
 
     if score_100 < DQ_BLOCK_THRESHOLD:
         hard_blocks.append(f"Score {score_100}/100 below threshold {DQ_BLOCK_THRESHOLD}")
