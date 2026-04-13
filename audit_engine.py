@@ -1269,8 +1269,16 @@ def gs_gate_row(ws, r, gate_name, result, detail, is_final=False, alt=False, is_
         else:
             res_fill = C_DQ_BLOCK; res_fc = WHITE
     else:
-        res_fill = C_GATE_PASS if result == "Pass" else (C_DQ_WARN if result == "Warn" else C_GATE_FAIL)
-        res_fc   = DARK
+        if result == "Pass":
+            res_fill = C_GATE_PASS; res_fc = DARK
+        elif result == "Warn":
+            res_fill = C_DQ_WARN; res_fc = DARK
+        elif result == "Held":
+            res_fill = "BDD7EE"; res_fc = DARK    # light blue — held for tomorrow
+        elif result == "N/A":
+            res_fill = C_DQ_SKIP; res_fc = DARK
+        else:
+            res_fill = C_GATE_FAIL; res_fc = DARK
 
     c2 = ws.cell(r, 2, result)
     c2.fill = solid(res_fill); c2.font = mkfont(bold=(is_final or is_doc), color=res_fc)
@@ -1285,6 +1293,34 @@ def gs_spacer(ws, r):
     ws.row_dimensions[r].height = 6
     for c in range(1, 4):
         ws.cell(r, c).fill = solid("FFFFFF")
+
+# ── Hold logic: skip WOs whose last SA was today ─────────
+
+def check_hold(wn, sa_lookup):
+    """
+    If the most recent SA for this WO was dispatched/scheduled today,
+    return (True, hold_detail_string).  Otherwise (False, "").
+    WOLI data may be incomplete for same-day SAs, so we defer audit
+    by one day to let Salesforce finalize the line items.
+    """
+    from datetime import date
+    today = date.today()
+    sas = sa_lookup.get(wn, [])
+    if not sas:
+        return False, ""
+    # Find the latest SA date
+    sa_dates = [(sa["date"], sa) for sa in sas if sa["date"] is not None]
+    if not sa_dates:
+        return False, ""
+    latest_date, latest_sa = max(sa_dates, key=lambda x: x[0])
+    if latest_date == today:
+        sa_num  = latest_sa.get("sa_num", "?")
+        status  = latest_sa.get("status", "?")
+        return True, (f"Last SA ({sa_num}) is today {today.strftime('%m/%d')} "
+                      f"[{status}] — WOLI may be incomplete. "
+                      f"Re-run audit tomorrow for complete data.")
+    return False, ""
+
 
 # ── Gate logic functions ─────────────────────────────────
 
@@ -1788,6 +1824,15 @@ def build_gate_summary(ws, data, skip_dq=False):
         gs_wo_banner(ws, cur, wn, cust, tech, sub)
         cur += 1
 
+        # ── Hold check: defer WOs whose last SA was today ─────────
+        is_held, hold_detail = check_hold(wn, sa_lk)
+        if is_held:
+            gs_gate_row(ws, cur, "HOLD", "Held", hold_detail, alt=False)
+            cur += 1
+            gs_spacer(ws, cur)
+            cur += 1
+            continue
+
         # Run standard gates
         gates = [
             ("WO Status Ready",              gate_wo_status(wrow.to_dict())),
@@ -2042,7 +2087,7 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
         return {
             "xlsx_bytes": b"", "built": [], "failed": [],
             "log": log, "wo_count": 0, "parts_count": 0,
-            "gate_summary": {"pass": 0, "fail": 0, "warn": 0},
+            "gate_summary": {"pass": 0, "fail": 0, "warn": 0, "hold": 0},
             "gate_details": {},
             "validation_ok": False, "validation_errors": validation_errors,
         }
@@ -2106,7 +2151,7 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
         wb.move_sheet("WO Gate Summary", offset=-idx)
 
     # Gate summary stats + per-gate details (audit-eligible WOs only)
-    gate_summary = {"pass": 0, "fail": 0, "warn": 0}
+    gate_summary = {"pass": 0, "fail": 0, "warn": 0, "hold": 0}
     gate_details = {}
     GATE_NAMES_CORE = [
         "WO Status Ready", "Destination Review", "RO-Eligible Parts Identified",
@@ -2128,6 +2173,13 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
             wn   = str(wrow.get("WO#",""))
             tech = str(wrow.get("WO_Technician",""))
             sub  = str(wrow.get("WO_Subtype",""))
+
+            # ── Hold check: defer WOs whose last SA was today ─────
+            is_held, _ = check_hold(wn, sa_lk)
+            if is_held:
+                gate_summary["hold"] += 1
+                continue
+
             wp   = pa_df[pa_df["WO#"] == wn] if len(pa_df) else pd.DataFrame()
             parts = wp.to_dict("records")
             cause, ca = get_ca(ca_lk, wn)

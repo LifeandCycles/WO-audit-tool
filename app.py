@@ -218,7 +218,7 @@ st.markdown("""
     /* ── Metric cards ── */
     .metrics-grid {
         display: grid;
-        grid-template-columns: repeat(5, 1fr);
+        grid-template-columns: repeat(6, 1fr);
         gap: 0.5rem;
         margin: 1rem 0;
     }
@@ -246,6 +246,7 @@ st.markdown("""
     .m-card.ready::before  { background: #00ff9c; }
     .m-card.blocked::before { background: #ff3e3e; }
     .m-card.warned::before  { background: #ffb800; }
+    .m-card.held::before    { background: #a371f7; }
     .m-card.info::before    { background: #58a6ff; }
     .m-val {
         font-family: 'Rajdhani', sans-serif;
@@ -256,6 +257,7 @@ st.markdown("""
     .m-val.ready  { color: #00ff9c; }
     .m-val.blocked { color: #ff3e3e; }
     .m-val.warned  { color: #ffb800; }
+    .m-val.held    { color: #a371f7; }
     .m-val.info    { color: #58a6ff; }
     .m-label {
         font-family: 'JetBrains Mono', monospace;
@@ -596,6 +598,7 @@ with tab_audit:
                 st.error("AUDIT FAILED — no sheets could be built")
 
             # ── Metric cards ───────────────────────────────────────────
+            held_n = gs.get('hold', 0)
             st.markdown(f"""
             <div class="metrics-grid">
                 <div class="m-card info">
@@ -617,6 +620,10 @@ with tab_audit:
                 <div class="m-card warned">
                     <div class="m-val warned">{gs['warn']}</div>
                     <div class="m-label">Warned</div>
+                </div>
+                <div class="m-card held">
+                    <div class="m-val held">{held_n}</div>
+                    <div class="m-label">Held</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -797,6 +804,7 @@ with tab_quick:
                 st.error("AUDIT FAILED — no sheets could be built")
 
             # ── Metric cards ───────────────────────────────────────────
+            held_n = gs.get('hold', 0)
             st.markdown(f"""
             <div class="metrics-grid">
                 <div class="m-card info">
@@ -818,6 +826,10 @@ with tab_quick:
                 <div class="m-card warned">
                     <div class="m-val warned">{gs['warn']}</div>
                     <div class="m-label">Warned</div>
+                </div>
+                <div class="m-card held">
+                    <div class="m-val held">{held_n}</div>
+                    <div class="m-label">Held</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
