@@ -1975,11 +1975,13 @@ def build_doc_quality_sheet(ws, data):
 
 
 
-def run_audit(wo_file, haas_file=None):
+def run_audit(wo_file, haas_file=None, skip_dq=False):
     """
     Run the full WO audit pipeline on uploaded file objects.
     Returns dict with xlsx_bytes, built, failed, log, wo_count, parts_count,
     gate_summary, gate_details, validation_ok, validation_errors.
+    skip_dq: if True, exclude Documentation Quality from gate_summary/gate_details
+             (Excel report still includes all sheets).
     """
     import io
     log = []
@@ -2076,11 +2078,12 @@ def run_audit(wo_file, haas_file=None):
     # Gate summary stats + per-gate details (audit-eligible WOs only)
     gate_summary = {"pass": 0, "fail": 0, "warn": 0}
     gate_details = {}
-    GATE_NAMES = [
+    GATE_NAMES_CORE = [
         "WO Status Ready", "Destination Review", "RO-Eligible Parts Identified",
         "PR / PRLI Integrity", "Consumed vs Not Used", "Required RO Coverage",
-        "RO Status Valid", "Documentation Quality",
+        "RO Status Valid",
     ]
+    GATE_NAMES = GATE_NAMES_CORE + ([] if skip_dq else ["Documentation Quality"])
     for g in GATE_NAMES:
         gate_details[g] = {"Pass": 0, "Fail": 0, "Warn": 0}
 
@@ -2110,14 +2113,15 @@ def run_audit(wo_file, haas_file=None):
                 ("RO Status Valid",              gate_ro_status(parts, ro_df, wn)),
             ]
 
-            # Doc quality with CA duplicate merged in
-            dq_result, dq_detail, dq_scores = dq_gate(cause, ca, sub, wn, has_parts=wo_has_parts)
-            ca_dup_result, ca_dup_detail = gate_ca_duplicate(wn, tech, tech_ca_idx)
-            if ca_dup_result == "Warn":
-                dq_detail += f" | COPY/PASTE WARNING: {ca_dup_detail}"
-                if dq_result == "Pass":
-                    dq_result = "Warn"
-            gate_results.append(("Documentation Quality", (dq_result, dq_detail)))
+            if not skip_dq:
+                # Doc quality with CA duplicate merged in
+                dq_result, dq_detail, dq_scores = dq_gate(cause, ca, sub, wn, has_parts=wo_has_parts)
+                ca_dup_result, ca_dup_detail = gate_ca_duplicate(wn, tech, tech_ca_idx)
+                if ca_dup_result == "Warn":
+                    dq_detail += f" | COPY/PASTE WARNING: {ca_dup_detail}"
+                    if dq_result == "Pass":
+                        dq_result = "Warn"
+                gate_results.append(("Documentation Quality", (dq_result, dq_detail)))
 
             wo_has_fail = False
             wo_has_warn = False

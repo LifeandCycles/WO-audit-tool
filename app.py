@@ -8,6 +8,8 @@ Tab 3: Orphan Work Order Analyzer (engine v1.0)
 import streamlit as st
 import streamlit.components.v1 as components
 import os, time, urllib.parse
+from audit_engine import run_audit
+from orphan_engine import run_orphan_analysis
 
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -571,7 +573,6 @@ with tab_audit:
     if run_clicked and wo_file is not None:
         with st.spinner("Executing audit sequence..."):
             start = time.time()
-            from audit_engine import run_audit
             result = run_audit(wo_file, haas_file)
             elapsed = time.time() - start
 
@@ -774,7 +775,6 @@ with tab_quick:
     if qg_clicked and qg_wo_file is not None:
         with st.spinner("Running quick gate check..."):
             start = time.time()
-            from audit_engine import run_audit
             qg_result = run_audit(qg_wo_file, qg_haas_file, skip_dq=True)
             elapsed = time.time() - start
 
@@ -938,7 +938,6 @@ with tab_orphan:
     if orphan_clicked and orphan_file is not None:
         with st.spinner("Scanning for orphaned work orders..."):
             start = time.time()
-            from orphan_engine import run_orphan_analysis
             result = run_orphan_analysis(orphan_file, source_filename=orphan_file.name)
             elapsed = time.time() - start
 
