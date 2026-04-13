@@ -185,9 +185,20 @@ def run_orphan_analysis(wo_file, source_filename=None):
             errors.append("File has no data rows.")
         return {"validation_ok": False, "validation_errors": errors}
 
+    # ── Detect optional Territory column ────────────────────────────
+    territory_col_idx = None
+    for i, hdr in enumerate(header_row):
+        if _clean(hdr).lower() in ("service territory: name", "service territory", "territory"):
+            territory_col_idx = i
+            break
+
     if header_row_idx > 1:
         log.append(f"[OK]  Headers found on row {header_row_idx} of sheet '{ws.title}'")
     log.append(f"[OK]  Headers validated ({len(header_row)} columns)")
+    if territory_col_idx is not None:
+        log.append(f"[OK]  Territory column detected at position {territory_col_idx + 1}")
+    else:
+        log.append("[INFO] No territory column found — field will be blank in output")
 
     # ── Parse rows into WO groups ─────────────────────────────────────
     data_start = header_row_idx + 1
@@ -202,6 +213,9 @@ def run_orphan_analysis(wo_file, source_filename=None):
         esp_raw  = row[5]
         sched_raw = row[6]
         due_raw  = row[7]
+
+        # Territory (optional — safe even if column missing)
+        territory = _clean(row[territory_col_idx]) if territory_col_idx is not None and territory_col_idx < len(row) else ""
 
         if not wo_num:
             continue
@@ -218,8 +232,12 @@ def run_orphan_analysis(wo_file, source_filename=None):
             wos[wo_num] = {
                 "acct": acct,
                 "wo_status": wo_stat,
+                "territory": territory,
                 "sas": [],
             }
+        # Update territory if we see a non-blank value (may vary across SA rows)
+        if territory and not wos[wo_num].get("territory"):
+            wos[wo_num]["territory"] = territory
 
         wos[wo_num]["sas"].append({
             "appt_num":    appt_num,
@@ -319,6 +337,7 @@ def run_orphan_analysis(wo_file, source_filename=None):
             orphans.append({
                 "wo_num":      wo_num,
                 "wo_status":   wo_data["wo_status"],
+                "territory":   wo_data.get("territory", ""),
                 "sa_status":   sa_status,
                 "sched_start": sched_start,
                 "due_date":    due_date,
@@ -380,14 +399,15 @@ def run_orphan_analysis(wo_file, source_filename=None):
     orphan_headers = [
         "Work Order Number",
         "WO Status",
+        "Territory",
         "SA Status (latest)",
         "Scheduled Start (latest)",
         "Due Date",
         "Orphan Reason",
     ]
     col_widths = {
-        "A": 18.0, "B": 16.0, "C": 20.0,
-        "D": 24.0, "E": 20.0, "F": 52.0,
+        "A": 18.0, "B": 16.0, "C": 20.0, "D": 20.0,
+        "E": 24.0, "F": 20.0, "G": 52.0,
     }
 
     # Write headers
@@ -401,19 +421,18 @@ def run_orphan_analysis(wo_file, source_filename=None):
     for r_idx, orph in enumerate(orphans, start=2):
         ws_orph.cell(row=r_idx, column=1, value=orph["wo_num"])
         ws_orph.cell(row=r_idx, column=2, value=orph["wo_status"])
-        ws_orph.cell(row=r_idx, column=3, value=orph["sa_status"])
+        ws_orph.cell(row=r_idx, column=3, value=orph.get("territory", "") or "")
+        ws_orph.cell(row=r_idx, column=4, value=orph["sa_status"])
 
-        # Scheduled Start — formatted as string "YYYY-MM-DD HH:MM" or None
         sched_val = _fmt_datetime(orph["sched_start"])
-        cell_d = ws_orph.cell(row=r_idx, column=4, value=sched_val)
-        cell_d.alignment = date_align
-
-        # Due Date — formatted as string "YYYY-MM-DD HH:MM" or None
-        due_val = _fmt_datetime(orph["due_date"])
-        cell_e = ws_orph.cell(row=r_idx, column=5, value=due_val)
+        cell_e = ws_orph.cell(row=r_idx, column=5, value=sched_val)
         cell_e.alignment = date_align
 
-        ws_orph.cell(row=r_idx, column=6, value=orph["reason"])
+        due_val = _fmt_datetime(orph["due_date"])
+        cell_f = ws_orph.cell(row=r_idx, column=6, value=due_val)
+        cell_f.alignment = date_align
+
+        ws_orph.cell(row=r_idx, column=7, value=orph["reason"])
 
     # Column widths
     for col_letter, width in col_widths.items():

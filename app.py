@@ -47,13 +47,14 @@ const fs = 14;
 ctx.font = fs + 'px monospace';
 const colW = fs * 5;
 const cols = Math.floor(canvas.width / colW);
-const TRAIL = 6;
+const TRAIL = 16;
+const rowH = fs + 4;
 
 let columns = [];
 for (let i = 0; i < cols; i++) {
     columns.push({
         y: Math.random() * canvas.height * -1,
-        speed: 0.08 + Math.random() * 0.12,
+        speed: 2 + Math.random() * 4,
         glyph: gcodes[Math.floor(Math.random() * gcodes.length)],
         frame: 0,
         trail: []
@@ -61,15 +62,15 @@ for (let i = 0; i < cols; i++) {
 }
 
 function draw() {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     for (let i = 0; i < columns.length; i++) {
         const col = columns[i];
         col.frame++;
 
-        // Slowly cycle the glyph
-        if (col.frame % 4 === 0 && Math.random() < 0.3) {
+        // Cycle glyph as it falls
+        if (col.frame % 3 === 0) {
             col.trail.unshift(col.glyph);
             if (col.trail.length > TRAIL) col.trail.pop();
             col.glyph = gcodes[Math.floor(Math.random() * gcodes.length)];
@@ -77,22 +78,30 @@ function draw() {
 
         const x = i * colW;
 
-        // Draw leader (brightest)
-        ctx.fillStyle = '#00ff9c';
+        // Draw white-hot leader
+        ctx.fillStyle = '#ffffff';
         ctx.font = 'bold ' + fs + 'px monospace';
         ctx.fillText(col.glyph, x, col.y);
 
-        // Draw trail (fading)
+        // Draw bright green second char
+        if (col.trail.length > 0) {
+            ctx.fillStyle = '#00ff9c';
+            ctx.font = fs + 'px monospace';
+            ctx.fillText(col.trail[0], x, col.y - rowH);
+        }
+
+        // Draw fading green trail
         ctx.font = fs + 'px monospace';
-        for (let t = 0; t < col.trail.length; t++) {
-            const alpha = (1 - (t + 1) / (TRAIL + 1)) * 0.6;
+        for (let t = 1; t < col.trail.length; t++) {
+            const alpha = (1 - t / TRAIL) * 0.7;
             ctx.fillStyle = 'rgba(0, 255, 156, ' + alpha + ')';
-            ctx.fillText(col.trail[t], x, col.y - (t + 1) * (fs + 4));
+            ctx.fillText(col.trail[t], x, col.y - (t + 1) * rowH);
         }
 
         col.y += col.speed;
-        if (col.y > canvas.height + TRAIL * (fs + 4)) {
-            col.y = -fs * 2;
+        if (col.y > canvas.height + TRAIL * rowH) {
+            col.y = -(Math.random() * canvas.height * 0.5);
+            col.speed = 2 + Math.random() * 4;
             col.trail = [];
         }
     }
