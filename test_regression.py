@@ -15,7 +15,7 @@ Tolerances: score within +/- 5; grade and verdict must match exactly.
 import sys, os, pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit_engine import dq_gate, dq_clean
+from audit_engine import dq_gate, dq_clean, gate_consumed_vs_nnu
 
 # ── Locked-in cases (v12.8) ──────────────────────────────────────────────────
 # Format: wo_number: (expected_score, expected_grade, expected_verdict, rationale)
@@ -43,6 +43,15 @@ CASES = {
 }
 
 SCORE_TOLERANCE = 5
+
+# ── Consumption gate cases (v12.9) ───────────────────────────────────────────
+# Format: wo_number: (expected_verdict, rationale)
+CONSUMPTION_CASES = {
+    '401195': ('Pass',
+        "Part 51-0007 sold on two PRs (1 on PR-586794 + 2 on PR-588464 = 3) "
+        "and consumed 3. Must aggregate requested qty across PRLIs before "
+        "comparing to aggregate consumed — must not fail as OVER-CONSUMED."),
+}
 
 
 def run(xlsx_path):
@@ -75,7 +84,29 @@ def run(xlsx_path):
         mark = '[OK]  ' if status == 'PASS' else '[FAIL]'
         print(f"{mark} 00{wo}: {msg}")
     print(f"{'='*72}\n{n_pass}/{len(CASES)} cases passed")
-    return n_pass == len(CASES)
+
+    # ── Consumption gate cases ───────────────────────────────────────────
+    parts_df = pd.read_excel(xlsx_path, sheet_name='Parts_Output')
+    parts_df['WO#'] = parts_df['WO#'].astype(str).str.replace('.0', '', regex=False)
+    print(f"\n{'='*72}\nConsumption gate regression — {len(CONSUMPTION_CASES)} cases\n{'='*72}")
+    c_pass = 0
+    for wo, (exp_verdict, rationale) in CONSUMPTION_CASES.items():
+        parts = parts_df[parts_df['WO#'] == wo].to_dict('records')
+        if not parts:
+            print(f"[FAIL] 00{wo}: WO not found in Parts_Output")
+            continue
+        v, d = gate_consumed_vs_nnu(parts)
+        ok = v == exp_verdict
+        mark = '[OK]  ' if ok else '[FAIL]'
+        msg = f"exp {exp_verdict} | got {v} — {d}"
+        if not ok:
+            msg += f"\n    rationale: {rationale}"
+        print(f"{mark} 00{wo}: {msg}")
+        if ok:
+            c_pass += 1
+    print(f"{'='*72}\n{c_pass}/{len(CONSUMPTION_CASES)} cases passed")
+
+    return n_pass == len(CASES) and c_pass == len(CONSUMPTION_CASES)
 
 
 if __name__ == '__main__':

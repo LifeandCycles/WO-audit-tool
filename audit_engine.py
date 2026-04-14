@@ -1,5 +1,10 @@
 """
-WO Approval Audit Formatter v12.8 — Doc Quality blind-spot fixes.
+WO Approval Audit Formatter v12.9 — Multi-PR consumption aggregation.
+Changes from v12.8:
+  - gate_consumed_vs_nnu: aggregate QtyRequested per part number across
+    multiple PRLIs before comparing to QtyConsumed. Fixes false OVER-CONSUMED
+    failures when a part is split across two PRs (e.g. 51-0007 on WO 401195:
+    1 on PR-586794 + 2 on PR-588464 = 3 requested, 3 consumed → Pass).
 Changes from v12.7:
   - Customer-directed hold recognized as valid closure (customer will order parts,
     left disassembled pending decision, awaiting quote, etc.)
@@ -1651,23 +1656,37 @@ def gate_pr_prli(parts_for_wo):
     return "Pass", ", ".join(ok[:6]) + ("..." if len(ok) > 6 else "")
 
 def gate_consumed_vs_nnu(parts_for_wo):
+    # v12.8: Aggregate per part number across multiple PRLIs.
+    # Reason: when the same part is sold on two PRs (e.g. qty 1 on PR-A and
+    # qty 2 on PR-B), Parts_Output has one row per PRLI. QtyRequested is the
+    # per-PRLI qty, but QtyConsumed is the aggregate total repeated on every
+    # row for that part. Comparing row-by-row produces false OVER-CONSUMED
+    # failures when the aggregate requested (1+2=3) actually matches the
+    # aggregate consumed (3). Group by part, sum requested, take max of
+    # consumed/not-used (they're aggregate values).
     consumed = []
     nnu      = []
     partial  = []
     issues   = []
+    # Group rows by part number
+    by_part = {}
     for p in parts_for_wo:
         pn = str(p.get("PartNumber",""))
         if "CORE CHARGE" in pn.upper():
             continue
-        qr = sf(p.get("QtyRequested", 0))
-        qc_raw = p.get("QtyConsumed", None)
-        if qc_raw is None or str(qc_raw).strip() in ("nan","None",""):
+        by_part.setdefault(pn, []).append(p)
+    for pn, rows in by_part.items():
+        qr = sum(sf(r.get("QtyRequested", 0)) for r in rows)
+        # QtyConsumed/QtyNotUsed are aggregate values repeated per row —
+        # take the max (all rows should have the same value, but max is safe).
+        qc_raws = [r.get("QtyConsumed", None) for r in rows]
+        if all(qc is None or str(qc).strip() in ("nan","None","") for qc in qc_raws):
             issues.append(f"{pn} (consumed qty missing)")
             continue
-        qc = sf(qc_raw)
-        qn = sf(p.get("QtyNotUsed", 0))
+        qc = max(sf(qc) for qc in qc_raws if qc is not None and str(qc).strip() not in ("nan","None",""))
+        qn = max((sf(r.get("QtyNotUsed", 0)) for r in rows), default=0)
         if qr > 0 and qc > qr:
-            issues.append(f"{pn} OVER-CONSUMED ({qc:.0f} consumed vs {qr:.0f} requested)")
+            issues.append(f"{pn} OVER-CONSUMED ({qc:.0f} consumed vs {qr:.0f} requested across {len(rows)} PRLI)")
         elif qr > 0 and qc > 0 and qc == qr:
             consumed.append(pn)
         elif qr > 0 and qc == 0:
