@@ -1,5 +1,11 @@
 """
-WO Approval Audit Formatter v12.7 — Gate refinements & feedback loop.
+WO Approval Audit Formatter v12.8 — Doc Quality blind-spot fixes.
+Changes from v12.7:
+  - Customer-directed hold recognized as valid closure (customer will order parts,
+    left disassembled pending decision, awaiting quote, etc.)
+  - Cross-machine drift detection ("the other umc will need...") — post-drift
+    text is scoped out of signals/closure/bonus, and score is capped at 85
+    with a warning so CAs that end mid-thought on another machine can't score A.
 Changes from v12.5:
   - Destination gate output: total visits / fees applied / under-threshold summary
   - PR/PRLI gate: consumed part with no PR → Warn (yellow) "confirm van stock"
@@ -210,6 +216,45 @@ DQ_UNRESOLVED = re.compile(
     r'will\s+need\s+to\s+return|may\s+need\s+(to\s+be\s+)?(replaced?|repaired?))\b',
     re.IGNORECASE)
 
+# ── Customer-directed hold (v12.8) ───────────────────────────────────────────
+# Valid closure: customer instructed tech to stop, elected to defer, will
+# handle parts/install themselves, or is deciding whether to repair vs retire.
+# When this pattern matches at end-of-CA, it substitutes for "returned to
+# service" language — the WO is properly closed from the tech's side.
+DQ_CUSTOMER_HOLD = re.compile(
+    r'\b('
+    r'customer\s+(will|wants?|requested|elected|chose|decided|asked|needs?|prefers?|'
+    r'is\s+going\s+to|plans?\s+to|intends?\s+to)\s+'
+    r'[^.\n]{0,80}?(decide|determine|approve|think|replace|retire|repair|rebuild|'
+    r'quote|consider|review|install|order|schedule|handle|complete|purchase|'
+    r'contact|advise|monitor|let\s+us\s+know|get\s+back)|'
+    r'customer\s+will\s+(order|install|replace|complete|handle|contact|advise|monitor)|'
+    r'left\s+(the\s+)?(machine\s+)?(apart|disassembled|open|down|as\s+is|in\s+this\s+state)\s+'
+    r'(per|at|while|until|for|pending|so)\s+(the\s+)?(customer|cust)|'
+    r'awaiting\s+customer\s+(decision|approval|quote|response|authorization|direction|go.?ahead)|'
+    r'pending\s+customer\s+(decision|approval|response|authorization|direction)|'
+    r'customer\s+(requested|asked\s+for)\s+[^.\n]{0,40}quote|'
+    r'customer\s+(elected|chose|decided)\s+to\s+have|'
+    r'customer\s+will\s+(schedule|arrange|coordinate)\s+(return|repair|replacement)'
+    r')\b',
+    re.IGNORECASE)
+
+# ── Cross-machine drift (v12.8) ──────────────────────────────────────────────
+# When a CA pivots to a *different* machine near the end ("the other umc will
+# need..."), any signals or closure language after that marker belong to the
+# next job, not this one. We split the CA at the drift marker and score only
+# the pre-drift portion.
+DQ_DRIFT = re.compile(
+    r'\b('
+    r'the\s+other\s+(umc|vf|st|ec|ds|dt|tl|vm|mini\s*mill|lathe|mill|machine|rotary|spindle)|'
+    r'on\s+the\s+other\s+(machine|umc|vf|st|ec|ds|tl|lathe|mill)|'
+    r'other\s+machine\s+(will|needs?|requires?)|'
+    r'for\s+the\s+other\s+(umc|vf|st|ec|machine|lathe|mill)|'
+    r'the\s+second\s+(machine|umc|vf|st|lathe|mill)\s+(will|needs?)|'
+    r'sister\s+machine'
+    r')\b',
+    re.IGNORECASE)
+
 # ── Letter grade ──────────────────────────────────────────────────────────────
 def dq_letter_grade(score):
     if score >= 90: return 'A'
@@ -223,25 +268,45 @@ def dq_bonus_signals(combined):
     score = 10 if len(hits) >= 3 else (5 if len(hits) >= 1 else 0)
     return score, hits
 
+def dq_split_on_drift(ca):
+    """v12.8: If CA pivots to another machine ("the other umc..."), return
+    (pre_drift_text, drift_detected). Signals/closure after the drift marker
+    belong to a future job, not this WO."""
+    m = DQ_DRIFT.search(ca)
+    if not m:
+        return ca, False
+    return ca[:m.start()], True
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAID / COURTESY SCORING
 # ══════════════════════════════════════════════════════════════════════════════
 def dq_score_paid(cause, ca):
-    combined = (cause + ' ' + ca).lower()
-    ca_l     = ca.lower()
-    words    = dq_word_count(ca)
+    # v12.8: split CA on cross-machine drift — post-drift text is a future
+    # job and must not contribute to this WO's signals, closure, or bonus.
+    ca_scoped, has_drift = dq_split_on_drift(ca)
+    combined = (cause + ' ' + ca_scoped).lower()
+    ca_l     = ca_scoped.lower()
+    words    = dq_word_count(ca_scoped)
     bonus, sigs = dq_bonus_signals(combined)
     has_arrival = bool(DQ_ARRIVAL.search(combined))
     has_work    = bool(DQ_WORK.search(ca_l))
-    has_closure = bool(DQ_CLOSURE.search(combined))
+    has_closure_std   = bool(DQ_CLOSURE.search(combined))
+    has_customer_hold = bool(DQ_CUSTOMER_HOLD.search(combined))
+    has_closure = has_closure_std or has_customer_hold
     unresolved  = bool(DQ_UNRESOLVED.search(combined))
     short_vague = words < 20 and bonus == 0
     e_arrival = 25 if has_arrival else 0
     e_work    = 35 if has_work    else 0
     e_closure = 30 if has_closure else 0
     total     = e_arrival + e_work + e_closure + bonus
+    # v12.8: drift penalty — if the CA ends mid-thought on another machine,
+    # cap the score at B-range (max 85) and flag it as a warning.
+    warnings_out = []
+    if has_drift:
+        total = min(total, 85)
+        warnings_out.append("Cross-machine drift detected — final paragraph references another machine; closure for THIS WO unclear")
     auto_fails = []
-    if unresolved:
+    if unresolved and not has_customer_hold:
         auto_fails.append("WO unresolved — outcome not confirmed")
     if not has_arrival:
         auto_fails.append("No arrival/finding documented")
@@ -254,21 +319,26 @@ def dq_score_paid(cause, ca):
     return total, {
         'arrival': e_arrival, 'work': e_work, 'closure': e_closure, 'bonus': bonus,
         'has_arrival': has_arrival, 'has_work': has_work, 'has_closure': has_closure,
+        'has_customer_hold': has_customer_hold, 'has_drift': has_drift,
         'signals': sigs, 'words': words,
-    }, auto_fails, []
+    }, auto_fails, warnings_out
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WARRANTY SCORING
 # ══════════════════════════════════════════════════════════════════════════════
 def dq_score_warranty(cause, ca):
-    combined = (cause + ' ' + ca).lower()
-    ca_l     = ca.lower()
-    words    = dq_word_count(ca)
+    # v12.8: drift split + customer-hold closure
+    ca_scoped, has_drift = dq_split_on_drift(ca)
+    combined = (cause + ' ' + ca_scoped).lower()
+    ca_l     = ca_scoped.lower()
+    words    = dq_word_count(ca_scoped)
     bonus, sigs = dq_bonus_signals(combined)
     has_observed = bool(DQ_OBSERVED.search(combined))
     has_tested   = bool(DQ_TESTED.search(combined))
     has_work     = bool(DQ_WORK.search(ca_l))
-    has_closure  = bool(DQ_CLOSURE.search(combined))
+    has_closure_std   = bool(DQ_CLOSURE.search(combined))
+    has_customer_hold = bool(DQ_CUSTOMER_HOLD.search(combined))
+    has_closure  = has_closure_std or has_customer_hold
     unresolved   = bool(DQ_UNRESOLVED.search(combined))
     prior_wo_ref = bool(DQ_PRIOR_WO_REF.search(combined))
     hsg_paste    = bool(DQ_HSG_PASTE.search(combined))
@@ -278,8 +348,12 @@ def dq_score_warranty(cause, ca):
     e_work     = 25 if has_work     else 0
     e_closure  = 20 if has_closure  else 0
     total      = e_observed + e_tested + e_work + e_closure + bonus
+    warnings_out = []
+    if has_drift:
+        total = min(total, 85)
+        warnings_out.append("Cross-machine drift detected — final paragraph references another machine; closure for THIS WO unclear")
     auto_fails = []
-    if unresolved:
+    if unresolved and not has_customer_hold:
         auto_fails.append("WO unresolved — outcome not confirmed")
     if not has_observed:
         auto_fails.append("Failure not observed/reproduced by tech")
@@ -300,8 +374,9 @@ def dq_score_warranty(cause, ca):
         'closure': e_closure, 'bonus': bonus,
         'has_observed': has_observed, 'has_tested': has_tested,
         'has_work': has_work, 'has_closure': has_closure,
+        'has_customer_hold': has_customer_hold, 'has_drift': has_drift,
         'signals': sigs, 'words': words,
-    }, auto_fails, []
+    }, auto_fails, warnings_out
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN GATE FUNCTION

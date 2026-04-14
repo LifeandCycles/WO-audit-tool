@@ -1,7 +1,7 @@
 """
-WO Audit Console — Streamlit Web App V1.27
+WO Audit Console — Streamlit Web App V1.28
 Cyberpunk command console interface.
-Tab 1: WO Approval Audit (engine v12.7)
+Tab 1: WO Approval Audit (engine v12.8)
 Tab 2: Quick WO Gates — pass/fail gates without CA grading
 Tab 3: Orphan Work Order Analyzer (engine v1.0)
 """
@@ -520,7 +520,7 @@ st.markdown("""
 # ── Header ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-header">
-    <div class="version">V1.27</div>
+    <div class="version">V1.28</div>
     <h1>WO Audit Console</h1>
     <p class="subtitle">// work order approval audit &amp; quick gates &amp; orphan analyzer</p>
 </div>
@@ -529,7 +529,7 @@ st.markdown("""
 # ── Status line ────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="status-line">
-    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.7 &middot; quick gates &middot; orphan engine v1.0
+    <span class="dot"></span>SYSTEM ONLINE &mdash; audit engine v12.8 &middot; quick gates &middot; orphan engine v1.0
 </div>
 """, unsafe_allow_html=True)
 
@@ -1049,7 +1049,7 @@ with tab_orphan:
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-footer">
-    <span>&#9889;</span> WO Audit Console V1.27 &mdash; Engine v12.7 &middot; Quick Gates &middot; Orphan v1.0
+    <span>&#9889;</span> WO Audit Console V1.28 &mdash; Engine v12.7 &middot; Quick Gates &middot; Orphan v1.0
     <span>&middot;</span> Built by K
 </div>
 """, unsafe_allow_html=True)
