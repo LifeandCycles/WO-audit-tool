@@ -1,15 +1,18 @@
 """
-WO Audit Console — Streamlit Web App V1.30
+WO Audit Console — Streamlit Web App V1.31
 Cyberpunk command console interface.
-Tab 1: WO Approval Audit (engine v12.10)
+Tab 1: WO Approval Audit (engine v12.10)  — now auto-ingests into the per-HFO ledger
 Tab 2: Quick WO Gates — pass/fail gates without CA grading
 Tab 3: Orphan Work Order Analyzer (engine v1.0)
+Tab 4: Trends — cross-upload analytics from the per-HFO ledger
 """
 import streamlit as st
 import streamlit.components.v1 as components
-import os, time, urllib.parse
+import os, time, urllib.parse, tempfile
+import pandas as pd
 from audit_engine import run_audit
 from orphan_engine import run_orphan_analysis
+from ledger_engine import ingest as ledger_ingest, read_ledger, read_tech_activity, VALID_HFOS
 
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -536,7 +539,37 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════════════════
-tab_audit, tab_quick, tab_orphan = st.tabs(["WO Approval Audit", "Quick WO Gates", "Orphan Analyzer"])
+# ── Admin gate for the Trends tab ──────────────────────────────────────────
+# The Trends tab is only shown when the request carries the correct admin
+# secret as a URL query parameter (?admin=<secret>). The secret is never in
+# the code — it's read from Streamlit secrets (Cloud → App settings → Secrets,
+# TOML format: WO_ADMIN_KEY = "...") or falls back to the WO_ADMIN_KEY
+# environment variable for local dev.  If unset, the tab is hidden for
+# everyone (fail-closed).
+def _load_admin_key() -> str:
+    # 1. Streamlit secrets (Community Cloud, TOML)
+    try:
+        if "WO_ADMIN_KEY" in st.secrets:
+            return str(st.secrets["WO_ADMIN_KEY"]).strip()
+    except Exception:
+        pass
+    # 2. Environment variable (local dev)
+    return os.getenv("WO_ADMIN_KEY", "").strip()
+
+_ADMIN_KEY = _load_admin_key()
+try:
+    _supplied_key = st.query_params.get("admin", "")
+except Exception:
+    _supplied_key = ""
+IS_ADMIN = bool(_ADMIN_KEY) and (_supplied_key == _ADMIN_KEY)
+
+_tab_labels = ["WO Approval Audit", "Quick WO Gates", "Orphan Analyzer"]
+if IS_ADMIN:
+    _tab_labels.append("Trends")
+
+_tabs = st.tabs(_tab_labels)
+tab_audit, tab_quick, tab_orphan = _tabs[0], _tabs[1], _tabs[2]
+tab_trends = _tabs[3] if IS_ADMIN else None
 
 # ══════════════════════════════════════════════════════════════════════════
 # TAB 1 — WO APPROVAL AUDIT
@@ -555,7 +588,18 @@ with tab_audit:
         key="audit_haas_file",
     )
 
-    run_disabled = wo_file is None
+    # HFO selector — required, no default. Ensures a 3010 upload never lands
+    # in 3040's history (or vice-versa).
+    hfo_choice = st.selectbox(
+        "**HFO (entity)**",
+        options=["— Select HFO —"] + list(VALID_HFOS),
+        index=0,
+        help="Which HFO this report belongs to. Required before running the audit.",
+        key="audit_hfo",
+    )
+    hfo_selected = hfo_choice if hfo_choice in VALID_HFOS else None
+
+    run_disabled = (wo_file is None) or (hfo_selected is None)
     run_clicked  = st.button(
         "Execute Audit",
         type="primary",
@@ -684,6 +728,35 @@ with tab_audit:
                     use_container_width=True,
                     key="audit_download",
                 )
+
+            # ── Ledger ingest ─────────────────────────────────────────
+            # Writes per-HFO rollups so the Trends tab can compound over time.
+            try:
+                wo_file.seek(0)
+                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+                    tf.write(wo_file.read())
+                    tmp_path = tf.name
+                ing = ledger_ingest(tmp_path, hfo_selected)
+                st.markdown('<div class="section-hdr">Ledger Updated</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f"""
+                    <div style="font-family: JetBrains Mono, monospace; font-size: 0.82rem; color: #8b949e; padding: 0.3rem 0;">
+                      HFO <span style="color:#c9d1d9">{ing['hfo']}</span> &middot;
+                      <span style="color:#c9d1d9">{ing['inserted']}</span> new WOs,
+                      <span style="color:#c9d1d9">{ing['updated']}</span> updated,
+                      <span style="color:#c9d1d9">{ing['activity_rows']}</span> activity rows &middot;
+                      see <strong>Trends</strong> tab.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            except Exception as exc:
+                st.warning(f"Ledger ingest skipped: {exc}")
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
             # ── Feedback / Dispute section ─────────────────────────────
             st.markdown('<div class="section-hdr">Scoring Feedback</div>', unsafe_allow_html=True)
@@ -1046,10 +1119,212 @@ with tab_orphan:
                 st.markdown(f'<div class="log-output"><pre>{log_html}</pre></div>', unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# TAB 4 — TRENDS (per-HFO ledger analytics, compounding over uploads)
+# ══════════════════════════════════════════════════════════════════════════
+# Defense in depth: the tab is only in the UI when IS_ADMIN, and the content
+# block below is additionally gated, so even if a future refactor exposes the
+# tab by accident, the analytics won't render.
+if IS_ADMIN and tab_trends is not None:
+ with tab_trends:
+    st.markdown(
+        """
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #8b949e;
+                    padding: 0.5rem 0 1rem 0;">
+            Volume, first-pass approval, blocking gates, and technician hours over time.<br>
+            Data accumulates automatically every time a report is run through Tab 1.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    hfo_pick = st.selectbox(
+        "**HFO**",
+        options=["All HFOs"] + list(VALID_HFOS),
+        index=0,
+        key="trends_hfo",
+    )
+
+    # Load ledger(s)
+    def _load(hfo_list):
+        wo_frames, act_frames = [], []
+        for h in hfo_list:
+            wf = read_ledger(h)
+            if not wf.empty:
+                wo_frames.append(wf)
+            af = read_tech_activity(h)
+            if not af.empty:
+                act_frames.append(af)
+        wo  = pd.concat(wo_frames,  ignore_index=True) if wo_frames  else pd.DataFrame()
+        act = pd.concat(act_frames, ignore_index=True) if act_frames else pd.DataFrame()
+        return wo, act
+
+    hfos_to_read = list(VALID_HFOS) if hfo_pick == "All HFOs" else [hfo_pick]
+    wo_df, act_df = _load(hfos_to_read)
+
+    if wo_df.empty:
+        st.info("No ledger data yet for this HFO. Upload a WO Approval Report on the first tab to populate.")
+    else:
+        # ── Filters ─────────────────────────────────────────────────────
+        wo_df = wo_df.dropna(subset=["field_complete_date"])
+        wo_df["month"] = wo_df["field_complete_date"].dt.to_period("M").astype(str)
+
+        with st.expander("Filters", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                min_d = wo_df["field_complete_date"].min().date()
+                max_d = wo_df["field_complete_date"].max().date()
+                date_range = st.date_input(
+                    "Date range (field complete)",
+                    value=(min_d, max_d),
+                    min_value=min_d,
+                    max_value=max_d,
+                    key="trends_dates",
+                )
+            with c2:
+                terr_opts = sorted([t for t in wo_df["home_territory"].dropna().unique() if t])
+                terr_sel = st.multiselect(
+                    "Home territories", options=terr_opts, default=terr_opts,
+                    key="trends_terrs",
+                )
+            with c3:
+                tech_opts = sorted([t for t in wo_df["technician"].dropna().unique() if t and t != "-"])
+                tech_sel = st.multiselect(
+                    "Technicians (leave empty = all)", options=tech_opts, default=[],
+                    key="trends_techs",
+                )
+
+        # Apply filters to WO ledger
+        f = wo_df.copy()
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            d_lo, d_hi = date_range
+            f = f[
+                (f["field_complete_date"] >= pd.to_datetime(d_lo)) &
+                (f["field_complete_date"] <= pd.to_datetime(d_hi) + pd.Timedelta(days=1))
+            ]
+        if terr_sel:
+            f = f[f["home_territory"].isin(terr_sel)]
+        if tech_sel:
+            f = f[f["technician"].isin(tech_sel)]
+
+        # ── KPI row ─────────────────────────────────────────────────────
+        total_wos = len(f)
+        passed    = int(f["passed_up_front"].sum())
+        pass_rate = (passed / total_wos * 100) if total_wos else 0
+        destin    = int(f["destin_only_fail"].sum())
+        blocked   = total_wos - passed
+
+        st.markdown(
+            f"""
+            <div class="metrics-grid">
+                <div class="m-card info"><div class="m-val info">{total_wos}</div><div class="m-label">WOs</div></div>
+                <div class="m-card ready"><div class="m-val ready">{passed}</div><div class="m-label">Passed Up Front</div></div>
+                <div class="m-card blocked"><div class="m-val blocked">{blocked}</div><div class="m-label">Blocked</div></div>
+                <div class="m-card warned"><div class="m-val warned">{destin}</div><div class="m-label">Destin-only Fails</div></div>
+                <div class="m-card info"><div class="m-val info">{pass_rate:.0f}%</div><div class="m-label">First-Pass Rate</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── Volume per territory per month ──────────────────────────────
+        st.markdown('<div class="section-hdr">WO Volume by Territory per Month</div>', unsafe_allow_html=True)
+        vol = f.groupby(["month", "home_territory"]).size().unstack(fill_value=0).sort_index()
+        if not vol.empty:
+            st.bar_chart(vol)
+
+        # ── First-pass rate per territory per month ─────────────────────
+        st.markdown('<div class="section-hdr">First-Pass Approval Rate (%) per Month</div>', unsafe_allow_html=True)
+        rate = (
+            f.groupby(["month", "home_territory"])["passed_up_front"]
+             .mean().unstack(fill_value=0).sort_index() * 100
+        ).round(1)
+        if not rate.empty:
+            st.line_chart(rate)
+
+        # ── Per-tech first-pass rate (if techs selected) ────────────────
+        if tech_sel:
+            st.markdown('<div class="section-hdr">Per-Tech First-Pass Rate (%) per Month</div>', unsafe_allow_html=True)
+            tr = (
+                f.groupby(["month", "technician"])["passed_up_front"]
+                 .mean().unstack(fill_value=0).sort_index() * 100
+            ).round(1)
+            st.line_chart(tr)
+
+        # ── Blocking gates breakdown ────────────────────────────────────
+        st.markdown('<div class="section-hdr">Blocking Gates (Why WOs Got Blocked)</div>', unsafe_allow_html=True)
+        blockers = f[f["passed_up_front"] == False].explode("blocking_gates")
+        blockers = blockers[blockers["blocking_gates"].notna() & (blockers["blocking_gates"] != "")]
+        if not blockers.empty:
+            gc = blockers["blocking_gates"].value_counts()
+            st.bar_chart(gc)
+            if tech_sel:
+                st.markdown("Per tech:")
+                tg = (
+                    blockers.groupby(["technician", "blocking_gates"]).size()
+                            .unstack(fill_value=0)
+                )
+                st.dataframe(tg, use_container_width=True)
+        else:
+            st.markdown("No blocked WOs in current filter window.")
+
+        # ── Tech hours (tech_activity) ──────────────────────────────────
+        if not act_df.empty:
+            st.markdown('<div class="section-hdr">Technician Hours per Month</div>', unsafe_allow_html=True)
+            type_opts = sorted(act_df["line_type"].dropna().unique())
+            defaults  = [t for t in ("Travel", "Labor") if t in type_opts]
+            type_sel = st.multiselect(
+                "Line types (default: Travel + Labor)",
+                options=type_opts,
+                default=defaults,
+                key="trends_types",
+            )
+
+            af = act_df.copy()
+            af["month_dt"] = pd.to_datetime(af["month"] + "-01", errors="coerce")
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                d_lo, d_hi = date_range
+                af = af[
+                    (af["month_dt"] >= pd.to_datetime(d_lo).replace(day=1)) &
+                    (af["month_dt"] <= pd.to_datetime(d_hi))
+                ]
+            if tech_sel:
+                af = af[af["technician"].isin(tech_sel)]
+            if terr_sel:
+                # Match either tech's home territory in filter OR home blank (e.g.
+                # unconfigured HFOs) — so default rules don't hide all rows.
+                af = af[af["home_territory"].isin(terr_sel) | af["home_territory"].isna() | (af["home_territory"] == "")]
+            if type_sel:
+                af = af[af["line_type"].isin(type_sel)]
+
+            if af.empty:
+                st.markdown("No activity rows in current filter window.")
+            else:
+                monthly = (
+                    af.groupby(["month", "line_type"])["total_hours"]
+                      .sum().unstack(fill_value=0).sort_index().round(1)
+                )
+                st.bar_chart(monthly)
+
+                tech_pivot = (
+                    af.groupby(["home_territory", "technician", "line_type"])["total_hours"]
+                      .sum().unstack(fill_value=0).round(1)
+                )
+                st.markdown("**Per-tech totals for selected window**")
+                st.dataframe(tech_pivot, use_container_width=True)
+
+        # ── Raw tables (expander) ───────────────────────────────────────
+        with st.expander("Raw WO ledger (filtered)"):
+            st.dataframe(f, use_container_width=True)
+        if not act_df.empty:
+            with st.expander("Raw tech activity (filtered)"):
+                st.dataframe(af if "af" in locals() else act_df, use_container_width=True)
+
+
 # ── Footer ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="console-footer">
-    <span>&#9889;</span> WO Audit Console V1.30 &mdash; Engine v12.7 &middot; Quick Gates &middot; Orphan v1.0
+    <span>&#9889;</span> WO Audit Console V1.32 &mdash; Engine v12.7 &middot; Quick Gates &middot; Orphan v1.0 &middot; Trends Ledger (admin)
     <span>&middot;</span> Built by K
 </div>
 """, unsafe_allow_html=True)

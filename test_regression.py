@@ -15,7 +15,7 @@ Tolerances: score within +/- 5; grade and verdict must match exactly.
 import sys, os, pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit_engine import dq_gate, dq_clean, gate_consumed_vs_nnu
+from audit_engine import dq_gate, dq_clean, gate_consumed_vs_nnu, gate_destination
 
 # ── Locked-in cases (v12.8) ──────────────────────────────────────────────────
 # Format: wo_number: (expected_score, expected_grade, expected_verdict, rationale)
@@ -40,6 +40,11 @@ CASES = {
     '401623': (95, 'A', 'Pass',
         "'Customer will continue to monitor and report if issue persists' "
         "after software revert resolved the issue."),
+    '399912': (40, 'F', 'Fail',
+        "Diagnostic-only CA: 'Ran 4 inch ball bar... Recommend replacing...'. "
+        "No arrival, no closure, no date/initials. Tightened closure regex "
+        "must NOT count 'Ran ballbar' or 'Ran 4' as post-repair confirmation. "
+        "Score should be 40 (0 arrival + 35 work + 0 closure + 5 bonus)."),
 }
 
 SCORE_TOLERANCE = 5
@@ -51,6 +56,15 @@ CONSUMPTION_CASES = {
         "Part 51-0007 sold on two PRs (1 on PR-586794 + 2 on PR-588464 = 3) "
         "and consumed 3. Must aggregate requested qty across PRLIs before "
         "comparing to aggregate consumed — must not fail as OVER-CONSUMED."),
+}
+
+# ── Destination gate cases (v12.10) ──────────────────────────────────────────
+# Format: wo_number: (expected_verdict, rationale)
+DESTINATION_CASES = {
+    '344609': ('N/A',
+        "Record Type = 'Rotary/In House Repair' — rotary shipped to shop, "
+        "not visited on-site. Destination review must return N/A regardless "
+        "of WOLI structure or DESTIN-01 presence."),
 }
 
 
@@ -106,7 +120,29 @@ def run(xlsx_path):
             c_pass += 1
     print(f"{'='*72}\n{c_pass}/{len(CONSUMPTION_CASES)} cases passed")
 
-    return n_pass == len(CASES) and c_pass == len(CONSUMPTION_CASES)
+    # ── Destination gate cases ───────────────────────────────────────────
+    wo_df = pd.read_excel(xlsx_path, sheet_name='WO')
+    wo_df['Work Order Number'] = wo_df['Work Order Number'].astype(str)
+    rec_type_map = dict(zip(wo_df['Work Order Number'], wo_df['Work Order Record Type']))
+    print(f"\n{'='*72}\nDestination gate regression — {len(DESTINATION_CASES)} cases\n{'='*72}")
+    d_pass = 0
+    for wo, (exp_verdict, rationale) in DESTINATION_CASES.items():
+        rec_type = rec_type_map.get(wo, '')
+        wrow = {"WO#": wo, "WO_RecordType": rec_type}
+        v, detail = gate_destination(wrow, {}, {}, {}, {})
+        ok = v == exp_verdict
+        mark = '[OK]  ' if ok else '[FAIL]'
+        msg = f"exp {exp_verdict} | got {v} — {detail}"
+        if not ok:
+            msg += f"\n    rationale: {rationale}"
+        print(f"{mark} 00{wo}: {msg}")
+        if ok:
+            d_pass += 1
+    print(f"{'='*72}\n{d_pass}/{len(DESTINATION_CASES)} cases passed")
+
+    return (n_pass == len(CASES)
+            and c_pass == len(CONSUMPTION_CASES)
+            and d_pass == len(DESTINATION_CASES))
 
 
 if __name__ == '__main__':

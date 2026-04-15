@@ -1,5 +1,17 @@
 """
-WO Approval Audit Formatter v12.9 — Multi-PR consumption aggregation.
+WO Approval Audit Formatter v12.10 — Destination N/A, closure tightening, Tech Discipline sheet.
+Changes from v12.9:
+  - Destination gate: returns 'N/A' with 'In house rotary repair — destination
+    does not apply' for WOs with Record Type = 'Rotary/In House Repair'.
+  - Closure regex: tightened to require post-repair confirmation context
+    ('ran program successfully', 'ran cycle with no alarms', etc). Standalone
+    diagnostic runs ('Ran 4 inch ball bar') no longer count as closure.
+    Fixes WO 399912-style false positives (diagnostic-only CAs scoring closure
+    credit they didn't earn).
+  - New 'Tech Discipline' sheet: per-tech ranking of date/initials/stamp
+    usage plus avg CA length; ratings Excellent/Good/Fair/Poor. Initials
+    detection uses an acronym blacklist to avoid false positives from body
+    text (LTP, PSI, RPM, etc).
 Changes from v12.8:
   - gate_consumed_vs_nnu: aggregate QtyRequested per part number across
     multiple PRLIs before comparing to QtyConsumed. Fixes false OVER-CONSUMED
@@ -110,8 +122,9 @@ DQ_CLOSURE = re.compile(
     r'machine\s+operating\s+normally|operating\s+within\s+normal|'
     r'functioning\s+(normally|properly|correctly)|'
     r'ran\s+(program|mdi|looping|spindle|cycle|lubrication|multiple|test|'
-    r'coolant|auger|vibro|ballbar|\d+)|'
-    r'cycled\s+(machine|power\s+\d+|through\s+\d+|\d+\s+times?)|'
+    r'coolant|auger)\s+(successfully|for\s+\d+|with\s+no\s+(issues?|alarms?|faults?|errors?))|'
+    r'ran\s+(program|mdi|cycle)\s+(multiple|several|\d+)\s+times?|'
+    r'cycled\s+(machine|power\s+\d+|through\s+\d+|\d+\s+times?)\s+(successfully|without|with\s+no\s+(issues?|alarms?|faults?))|'
     r'executed\s+a?\s*program|customer\s+confirmed|'
     r'no\s+further\s+(alarms?|faults?|issues?|problems?)|'
     r'machine\s+back\s+in\s+service|ready\s+for\s+(service|production)|'
@@ -485,6 +498,77 @@ def dq_gate(cause_raw, ca_raw, subtype='', wo_num='', has_parts=False):
 # ══════════════════════════════════════════════════════════════════════════════
 # END DOCUMENTATION QUALITY ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TECH DISCIPLINE PATTERNS  v12.10
+# Detect date + initials stamps per visit. Used to grade each tech on CA
+# documentation discipline (separate from DQ score).
+# ══════════════════════════════════════════════════════════════════════════════
+TD_DATE_US = re.compile(
+    r'(?<!\d)(0?[1-9]|1[0-2])[/\-](0?[1-9]|[12]\d|3[01])(?:[/\-]\d{2,4})?(?!\d)')
+TD_DATE_ISO = re.compile(
+    r'(?<!\d)(20\d{2})-(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])(?!\d)')
+TD_DATE_HDR = re.compile(r'\bdate\s*[:\-]\s*\d', re.IGNORECASE)
+TD_TECH_HDR = re.compile(r'\btechnician\s*[:\-]', re.IGNORECASE)
+# Initials stamp: 2-3 capital letters (with optional periods), anchored by
+# start-of-line OR preceded by a date, AND followed by end-of-line/space/punct.
+# This avoids matching acronyms like "LTP", "OK", "PSI", "RPM" in body text.
+TD_INIT_STAMP = re.compile(
+    r'(?:(?<=^)|(?<=\n)|(?<=\.\s)|'
+    r'(?<=\d/\d\s)|(?<=\d\-\d\s)|(?<=\d\s))'
+    r'([A-Z]\.?\s*[A-Z]\.?(?:\s*[A-Z]\.?)?)'
+    r'(?=[\s\-\u2013\u2014]|[,:;.]|$)',
+    re.MULTILINE)
+# Paired date + initials (order-agnostic, inline)
+TD_PAIRED = re.compile(
+    r'(?:'
+    r'(?:(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])(?:[/\-]\d{2,4})?)'
+    r'\s*[\-\u2013\u2014:]?\s*[A-Z]\.?\s*[A-Z]\.?(?:\s*[A-Z]\.?)?\b'
+    r'|'
+    r'(?:^|\n)\s*[A-Z]\.?\s*[A-Z]\.?(?:\s*[A-Z]\.?)?\s*[\-\u2013\u2014:]?\s*'
+    r'(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])(?:[/\-]\d{2,4})?'
+    r')',
+    re.MULTILINE)
+
+# Common acronyms/words in CA body text that look like initials but aren't
+# tech stamps. Used to exclude false-positive initial matches.
+TD_ACRONYM_BLACKLIST = {
+    'LTP','TSC','TSB','RPM','PSI','CNC','VAC','VDC','HBC','HSG','HSA','HAAS',
+    'WO','PR','RO','SO','SA','ID','OD','OK','NO','PM','AE','AT','DC','AC',
+    'FT','IN','MM','KG','LB','MI','IP','PC','OS','RF','TV','NC','ON','OFF',
+    'LED','RED','MAX','MIN','ABS','TEMP','AUTO','CCW','CW','ATC','APL',
+    'NNU','RMA','TBD','ASAP','FWC','IS','OR','AS','AND','THE','FOR','TO',
+    'BY','AT','IF','OF','ON','IS','A','I','X','Y','Z','B','C','S',
+    'USA','MST','PST','EST','CST','AM','PM'
+}
+
+def td_has_date(text):
+    return bool(TD_DATE_US.search(text) or TD_DATE_ISO.search(text)
+                or TD_DATE_HDR.search(text))
+
+def td_has_initials(text):
+    """True if any tech-looking initials appear as a standalone stamp
+    (not as a body-text acronym). Also returns True for structured
+    'Technician:' header format."""
+    if TD_TECH_HDR.search(text):
+        return True
+    for m in TD_INIT_STAMP.finditer(text):
+        token = m.group(1).replace('.','').replace(' ','').upper()
+        if token in TD_ACRONYM_BLACKLIST:
+            continue
+        if len(token) < 2 or len(token) > 3:
+            continue
+        return True
+    return False
+
+def td_has_stamp(text):
+    """True if the CA has at least one paired date+initials visit stamp
+    OR structured 'Date: / Technician:' header format."""
+    if TD_DATE_HDR.search(text) and TD_TECH_HDR.search(text):
+        return True
+    if TD_PAIRED.search(text):
+        return True
+    return False
 
 
 C_HEADER_TOP = "0D1F3C"
@@ -1454,6 +1538,14 @@ def gate_destination(wrow, woli_lookup, sa_lookup, wo_customer, destin_lookup=No
     wo_sa    = sa_lookup.get(wn, [])
     destin_qty = destin_lookup.get(wn, 0)   # current DESTIN-01 qty on WO
 
+    # ── Rotary / In House Repair (v12.10) ────────────────────────────────────
+    # In-house rotary repairs don't incur destination fees — the rotary is
+    # shipped to the shop, not visited on-site. Show N/A regardless of
+    # DESTIN-01 presence or WOLI structure.
+    rec_type = str(wrow.get("WO_RecordType","")).strip().lower()
+    if "rotary" in rec_type and ("in house" in rec_type or "in-house" in rec_type):
+        return "N/A", "In house rotary repair — destination does not apply"
+
     # ── No WOLI data at all ───────────────────────────────────────────────────
     if not wo_woli:
         if destin_qty > 0:
@@ -2157,6 +2249,141 @@ def build_doc_quality_sheet(ws, data):
     ws.sheet_properties.tabColor = "2E75B6"
 
 
+def build_tech_discipline(ws, data):
+    """
+    Tech Discipline sheet — one row per tech, showing how consistently they
+    include a date + initials stamp on each visit, and their average CA length.
+
+    Format (v12.10):
+      Tech | WOs | Date % | Initials % | Paired Stamp % | Avg CA Chars | Rating
+    """
+    wo_all = data["WO_Output"]
+    wo_df  = wo_all[wo_all["WO_Status"].isin(AUDIT_STATUSES)] if "WO_Status" in wo_all.columns else wo_all
+    ca_lk  = data.get("ca_lookup", {})
+
+    from openpyxl.utils import get_column_letter
+    from collections import defaultdict
+
+    # ── Aggregate per tech ────────────────────────────────────────────────────
+    stats = defaultdict(lambda: {"wos":0, "date":0, "init":0, "stamp":0, "chars":0})
+    for _, wrow in wo_df.iterrows():
+        tech = str(wrow.get("WO_Technician","")).strip()
+        if not tech or tech.lower() in ("nan","none",""):
+            continue
+        wn = str(wrow.get("WO#","")).strip()
+        cause, ca = get_ca(ca_lk, wn)
+        ca_clean = dq_clean(ca)
+        if len(ca_clean) < 20:
+            continue  # skip near-empty CAs
+        s = stats[tech]
+        s["wos"]   += 1
+        s["chars"] += len(ca_clean)
+        if td_has_date(ca_clean):     s["date"]  += 1
+        if td_has_initials(ca_clean): s["init"]  += 1
+        if td_has_stamp(ca_clean):    s["stamp"] += 1
+
+    # Build rows
+    rows = []
+    for tech, s in stats.items():
+        n = s["wos"]
+        if n == 0: continue
+        date_pct  = round(s["date"]  / n * 100)
+        init_pct  = round(s["init"]  / n * 100)
+        stamp_pct = round(s["stamp"] / n * 100)
+        avg_chars = round(s["chars"] / n)
+        # Rating: Excellent ≥90% stamps, Good ≥70%, Fair ≥40%, Poor <40%.
+        # Low-volume techs (<3 WOs) get "Small Sample" (ignored for coaching).
+        if n < 3:
+            rating = "Small Sample"
+        elif stamp_pct >= 90:
+            rating = "Excellent"
+        elif stamp_pct >= 70:
+            rating = "Good"
+        elif stamp_pct >= 40:
+            rating = "Fair"
+        else:
+            rating = "Poor"
+        rows.append((tech, n, date_pct, init_pct, stamp_pct, avg_chars, rating))
+
+    # Sort: Excellent/Good/Fair/Poor/Small Sample, then stamp% desc, then WOs desc
+    RATING_ORDER = {"Excellent":0, "Good":1, "Fair":2, "Poor":3, "Small Sample":4}
+    rows.sort(key=lambda r: (RATING_ORDER[r[6]], -r[4], -r[1]))
+
+    # ── Sheet layout ──────────────────────────────────────────────────────────
+    COLS = ["Technician", "WOs Audited", "Has Date %", "Has Initials %",
+            "Paired Stamp %", "Avg CA Chars", "Rating"]
+    WIDTHS = [26, 12, 12, 14, 16, 14, 16]
+    for i, w in enumerate(WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Title
+    ws.merge_cells(f"A1:{get_column_letter(len(COLS))}1")
+    t = ws.cell(1, 1, "Tech Documentation Discipline — Date & Initials Stamps per Visit")
+    t.fill = solid("0D1F3C"); t.font = mkfont(bold=True, color=WHITE, size=13)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 32
+
+    # Subtitle
+    ws.merge_cells(f"A2:{get_column_letter(len(COLS))}2")
+    sub = ws.cell(2, 1,
+        "Paired Stamp = both date AND initials present together (e.g. '4/7 JR' or "
+        "'Date: ... / Technician: ...'). Small-sample techs (<3 WOs) "
+        "excluded from ranked coaching list.")
+    sub.fill = solid("1F4E79")
+    sub.font = Font(italic=True, color="DDDDDD", size=9, name="Arial")
+    sub.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 30
+
+    # Header
+    for c, label in enumerate(COLS, 1):
+        cell = ws.cell(3, c, label)
+        cell.fill = solid("365F91"); cell.font = mkfont(bold=True, color=WHITE, size=10)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    ws.row_dimensions[3].height = 28
+    ws.freeze_panes = "A4"
+
+    def rating_fill(r):
+        return {"Excellent":"375623", "Good":"C6EFCE", "Fair":"FFD966",
+                "Poor":"FFC7CE", "Small Sample":"D0D0D0"}.get(r, "F2F2F2")
+    def rating_fc(r):
+        return WHITE if r in ("Excellent",) else DARK
+    def pct_fill(p):
+        if p >= 90: return "C6EFCE"
+        if p >= 70: return "E2EFDA"
+        if p >= 40: return "FFD966"
+        return "FFC7CE"
+
+    row = 4
+    for tech, n, date_pct, init_pct, stamp_pct, avg_chars, rating in rows:
+        row_bg = "F2F2F2" if row % 2 == 0 else "FFFFFF"
+        def wc(col, v, bg=None, fc=DARK, bold=False, align="center"):
+            cell = ws.cell(row, col, v)
+            cell.fill   = solid(bg or row_bg)
+            cell.font   = mkfont(bold=bold, color=fc, size=10)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal=align, vertical="center")
+        wc(1, tech, align="left", bold=True)
+        wc(2, n)
+        wc(3, f"{date_pct}%", bg=pct_fill(date_pct))
+        wc(4, f"{init_pct}%", bg=pct_fill(init_pct))
+        wc(5, f"{stamp_pct}%", bg=pct_fill(stamp_pct), bold=True)
+        wc(6, avg_chars)
+        wc(7, rating, bg=rating_fill(rating), fc=rating_fc(rating), bold=True)
+        row += 1
+
+    # Summary footer
+    row += 1
+    ws.merge_cells(f"A{row}:{get_column_letter(len(COLS))}{row}")
+    counts = {r[6]: 0 for r in rows}
+    for r in rows: counts[r[6]] += 1
+    summary_txt = " | ".join(f"{k}: {counts[k]}" for k in ("Excellent","Good","Fair","Poor","Small Sample") if counts.get(k,0))
+    sc = ws.cell(row, 1, f"Summary — {summary_txt}")
+    sc.fill = solid("1F4E79"); sc.font = Font(bold=True, color=WHITE, size=10, name="Arial")
+    sc.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[row].height = 22
+    ws.sheet_properties.tabColor = "B85450"
+
 
 def run_audit(wo_file, haas_file=None, skip_dq=False):
     """
@@ -2252,6 +2479,7 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
     try_sheet("WO Gate Summary",  build_gate_summary, d, skip_dq=skip_dq)
     if not skip_dq:
         try_sheet("Doc Quality",      build_doc_quality_sheet, d)
+        try_sheet("Tech Discipline",  build_tech_discipline, d)
     try_sheet("Key",              build_key, has_haas=(haas_df is not None))
 
     # Move WO Gate Summary to first position
@@ -2269,7 +2497,7 @@ def run_audit(wo_file, haas_file=None, skip_dq=False):
     ]
     GATE_NAMES = GATE_NAMES_CORE + ([] if skip_dq else ["Documentation Quality"])
     for g in GATE_NAMES:
-        gate_details[g] = {"Pass": 0, "Fail": 0, "Warn": 0}
+        gate_details[g] = {"Pass": 0, "Fail": 0, "Warn": 0, "N/A": 0}
 
     try:
         pa_df  = d["Parts_Output"]
